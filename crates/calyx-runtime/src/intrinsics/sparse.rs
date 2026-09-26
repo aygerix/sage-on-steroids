@@ -276,9 +276,13 @@ pub fn parent(it: &mut Interp, ring: &Value) -> RResult<Rc<Struct>> {
 }
 
 /// `P ! A` for a sparse matrix structure P.
-pub fn coerce(_: &mut Interp, st: &Rc<Struct>, x: &Value) -> RResult<Result<Value, Option<String>>> {
+pub fn coerce(it: &mut Interp, st: &Rc<Struct>, x: &Value) -> RResult<Result<Value, Option<String>>> {
     match x {
         Value::Sparse(a) if a.ring() == &parent_info(st).ring => Ok(Ok(x.clone())),
+        Value::Sparse(a) => match changed_ring(it, a, &parent_info(st).ring) {
+            Ok(v) => Ok(Ok(v)),
+            Err(_) => Ok(Err(None)),
+        },
         Value::Int(n) if n.is_zero() => Ok(Ok(sparse_value(st.clone(), 0, 0))),
         _ => Ok(Err(None)),
     }
@@ -541,6 +545,93 @@ fn column_weight(_: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
 fn column_weights(_: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
     let m = sparse_arg(a, 0)?;
     one(Value::int_seq(column_weights_of(&m).into_iter().map(|n| Integer::from_u64(n as u64))))
+}
+
+#[derive(Clone, Copy)]
+enum Join {
+    Horizontal,
+    Vertical,
+    Diagonal,
+}
+
+fn join(it: &mut Interp, a: &mut CallArgs, how: Join) -> RResult<Vals> {
+    let (x, y) = (sparse_arg(a, 0)?, sparse_arg(a, 1)?);
+    if x.ring() != y.ring() {
+        return Err(RuntimeError::runtime("Arguments have incompatible coefficient rings"));
+    }
+    if matches!(how, Join::Horizontal) && x.nrows != y.nrows {
+        return Err(RuntimeError::runtime("Matrices have incompatible numbers of rows"));
+    }
+    if matches!(how, Join::Vertical) && x.ncols != y.ncols {
+        return Err(RuntimeError::runtime("Matrices have incompatible numbers of columns"));
+    }
+    let (nrows, ncols, yi, yj) = match how {
+        Join::Horizontal => (x.nrows, x.ncols + y.ncols, 0, x.ncols),
+        Join::Vertical => (x.nrows + y.nrows, x.ncols, x.nrows, 0),
+        Join::Diagonal => (x.nrows + y.nrows, x.ncols + y.ncols, x.nrows, x.ncols),
+    };
+    let Value::Sparse(mut out) = new_value(it, x.ring(), nrows, ncols)? else { unreachable!() };
+    for (i, j, e) in x.entries(it) {
+        Rc::make_mut(&mut out).set(it, i, j, &e)?;
+    }
+    for (i, j, e) in y.entries(it) {
+        Rc::make_mut(&mut out).set(it, yi + i, yj + j, &e)?;
+    }
+    one(Value::Sparse(out))
+}
+
+fn horizontal_join(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    join(it, a, Join::Horizontal)
+}
+
+fn vertical_join(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    join(it, a, Join::Vertical)
+}
+
+fn diagonal_join(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    join(it, a, Join::Diagonal)
+}
+
+fn dense_matrix(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let x = sparse_arg(a, 0)?;
+    one(crate::intrinsics::matrices::mat_value(it, x.ring(), x.dense())?)
+}
+
+fn from_dense(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let Value::Mat(x) = &a.args[0] else { return Err(bad()) };
+    let Value::Sparse(mut out) = new_value(it, x.ring(), x.m.nrows(), x.m.ncols())? else { unreachable!() };
+    for i in 0..x.m.nrows() {
+        for j in 0..x.m.ncols() {
+            if x.m.entry_is_zero(i, j) {
+                continue;
+            }
+            let e = crate::intrinsics::matrices::entry_value(it, x, i, j);
+            Rc::make_mut(&mut out).set(it, i, j, &e)?;
+        }
+    }
+    one(Value::Sparse(out))
+}
+
+fn changed_ring(it: &mut Interp, x: &SparseMatrix, ring: &Value) -> RResult<Value> {
+    let Value::Sparse(mut out) = new_value(it, ring, x.nrows, x.ncols)? else { unreachable!() };
+    for (i, j, e) in x.entries(it) {
+        if !Rc::make_mut(&mut out).set(it, i, j, &e)? {
+            return Err(RuntimeError::runtime("Cannot coerce element from source coefficent ring into the destination coefficient ring"));
+        }
+    }
+    Ok(Value::Sparse(out))
+}
+
+fn change_ring(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let x = sparse_arg(a, 0)?;
+    let ring = ring_arg(a, 1)?;
+    one(changed_ring(it, &x, &ring)?)
+}
+
+fn sparse_over(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let ring = ring_arg(a, 0)?;
+    let x = sparse_arg(a, 1)?;
+    one(changed_ring(it, &x, &ring)?)
 }
 
 fn set_entry_proc(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
@@ -1003,4 +1094,11 @@ pub fn register(it: &mut Interp) {
     def_both(it, "RemoveColumn", ", j::RngIntElt", "Remove column j.", remove_col_proc, remove_col_func);
     def_both(it, "RemoveRowColumn", ij, "Remove row i and column j.", remove_row_col_proc, remove_row_col_func);
     def_both(it, "RemoveZeroRows", "", "Remove all zero rows.", remove_zero_rows_proc, remove_zero_rows_func);
+    it.def("HorizontalJoin", "A::MtrxSprs, B::MtrxSprs -> MtrxSprs", "Join B to the right of A.", horizontal_join);
+    it.def("VerticalJoin", "A::MtrxSprs, B::MtrxSprs -> MtrxSprs", "Join B below A.", vertical_join);
+    it.def("DiagonalJoin", "A::MtrxSprs, B::MtrxSprs -> MtrxSprs", "Join A and B as diagonal blocks.", diagonal_join);
+    it.def("Matrix", "A::MtrxSprs -> Mtrx", "The dense matrix equal to A.", dense_matrix);
+    it.def("SparseMatrix", "A::Mtrx -> MtrxSprs", "The sparse matrix equal to A.", from_dense);
+    it.def("ChangeRing", "A::MtrxSprs, R::Rng -> MtrxSprs", "A with its entries coerced into R.", change_ring);
+    it.def("SparseMatrix", "R::Rng, A::MtrxSprs -> MtrxSprs", "The sparse matrix over R with the entries of A.", sparse_over);
 }
