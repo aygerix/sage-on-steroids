@@ -583,6 +583,14 @@ fn matrix_space(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
     one(Value::Struct(parent(it, &ring, r, c, Shape::Space)?))
 }
 
+/// `KMatrixSpace(K, m, n)`: `RMatrixSpace` for a field.
+fn k_matrix_space(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    if !it.types.isa(a.args[0].type_id(), t::FLD) {
+        return Err(RuntimeError::runtime("Argument 1 is not a field"));
+    }
+    matrix_space(it, a)
+}
+
 fn rspace(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
     let ring = ring_arg(a, 0)?;
     let n = dim(a, 1, 2)?;
@@ -680,7 +688,7 @@ pub fn register(it: &mut Interp) {
         it.def(name, "R::Rng, n::RngIntElt -> AlgMat", "The full matrix algebra of degree n over R.", matrix_algebra);
     }
     it.def("RMatrixSpace", "R::Rng, m::RngIntElt, n::RngIntElt -> ModMatRng", "The full space of m by n matrices over R.", matrix_space);
-    it.def("KMatrixSpace", "K::Fld, m::RngIntElt, n::RngIntElt -> ModMatFld", "The full space of m by n matrices over K.", matrix_space);
+    it.def("KMatrixSpace", "K::Rng, m::RngIntElt, n::RngIntElt -> ModMatFld", "The full space of m by n matrices over K.", k_matrix_space);
     it.def("RSpace", "R::Rng, n::RngIntElt -> ModTupRng", "The full R-space of degree n.", rspace);
     for name in ["VectorSpace", "KSpace"] {
         it.def(name, "K::Fld, n::RngIntElt -> ModTupFld", "The full vector space of degree n over K.", rspace);

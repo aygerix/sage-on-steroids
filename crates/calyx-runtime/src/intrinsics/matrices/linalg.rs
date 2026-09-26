@@ -426,7 +426,7 @@ fn pfaffians(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
 
 /// A basis of the lattice {v in Z^m : v·A = 0} of a matrix over the
 /// integers, in Hermite form (which makes it unique).
-fn integer_kernel(m: &Mat) -> Mat {
+pub(super) fn integer_kernel(m: &Mat) -> Mat {
     let (r, ctx) = (m.nrows(), m.ctx().clone());
     let null = m.transpose().nullspace_z();
     match null.ncols() {
@@ -572,7 +572,7 @@ fn hermite(m: &Mat, want_t: bool) -> (Mat, Option<Mat>) {
 // ----- the integers modulo a composite -------------------------------------------------
 
 /// The modulus n of a matrix over Z/nZ.
-fn modulus(m: &Mat) -> Integer {
+pub(super) fn modulus(m: &Mat) -> Integer {
     match m.ctx().kind() {
         CtxKind::Nmod(n) => Integer::from_u64(*n),
         CtxKind::FmpzMod(n) => n.clone(),
@@ -581,7 +581,7 @@ fn modulus(m: &Mat) -> Integer {
 }
 
 /// The residues in [0, n) of the entries of a matrix over Z/nZ, by rows.
-fn residues(m: &Mat) -> Vec<Vec<Integer>> {
+pub(super) fn residues(m: &Mat) -> Vec<Vec<Integer>> {
     (0..m.nrows()).map(|i| (0..m.ncols()).map(|j| m.entry(i, j).to_integer().expect("a residue")).collect()).collect()
 }
 
@@ -608,7 +608,7 @@ fn balanced(x: &Integer, n: &Integer) -> Integer {
 /// A unit u of Z/nZ with u·p the divisor gcd(p, n) of n: the inverse of
 /// p/g for p of least absolute value, moved by multiples of n/g until it is
 /// a unit.
-fn normalizer(p: &Integer, n: &Integer) -> Integer {
+pub(super) fn normalizer(p: &Integer, n: &Integer) -> Integer {
     let g = p.gcd(n);
     let (base, step) = (balanced(p, n).divexact(&g), n.divexact(&g));
     for k in 0u64.. {
@@ -787,7 +787,7 @@ fn solve_mod(a: &Mat, w: &Mat) -> RResult<Option<Mat>> {
 /// columns P; the other rows reduce to zero in the order r + 1, n, n - 1,
 /// ..., r + 2 (counting from 1), and T has them from its last row up, the
 /// row for row o with 1 in place o and -A[o, P]·B in the first r places.
-fn field_echelon(m: &Mat) -> RResult<(Mat, Mat, Vec<usize>)> {
+pub(super) fn field_echelon(m: &Mat) -> RResult<(Mat, Mat, Vec<usize>)> {
     let n = m.nrows();
     if !m.floating() {
         if n == m.ncols() {

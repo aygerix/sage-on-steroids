@@ -22,7 +22,7 @@ fn cannot_coerce() -> RuntimeError {
 
 /// The entries of `x` coerced into `ring` (as by `!`), or None when one
 /// does not coerce.
-fn coerced(it: &mut Interp, x: &Mtrx, ring: &Value) -> RResult<Option<Mat>> {
+pub(super) fn coerced(it: &mut Interp, x: &Mtrx, ring: &Value) -> RResult<Option<Mat>> {
     if x.ring() == ring {
         return Ok(Some(x.m.clone()));
     }

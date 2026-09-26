@@ -3,12 +3,14 @@
 //! Magma prints a matrix one row per line, in brackets (a vector in
 //! parentheses), with the entries right-aligned to a common width: that of
 //! the widest entry, or over a prime field below 2^30 or a field with Zech
-//! logarithms, that of the widest element of the field. When a row does
-//! not fit on a line that way, and over the real and complex fields, the
-//! entries are not aligned, and long rows continue on further indented
-//! lines.
+//! logarithms, that of the widest element of the field. Over polynomial
+//! rings with such coefficients, the constant term of an entry counts as
+//! padded to that width too. When a row does not fit on a line that way,
+//! and over the real and complex fields, the entries are not aligned (three
+//! spaces apart over polynomial rings), and long rows continue on further
+//! indented lines.
 
-use calyx_flint::gr::CtxKind;
+use calyx_flint::gr::{CtxKind, Truth};
 
 use calyx_flint::mat::Mat;
 
@@ -38,6 +40,42 @@ fn field_width(it: &mut Interp, ring: &Value, level: Level) -> RResult<Option<us
         _ => return Ok(None),
     };
     Ok(Some(it.format_flat(&Value::Small(s, widest), level)?.chars().count()))
+}
+
+/// The width of the widest entry of `m`, a matrix over a polynomial ring
+/// whose coefficients are padded (see `field_width`), with the constant term
+/// of each entry counted as padded; 0 over other rings.
+fn padded_poly_width(it: &mut Interp, ring: &Value, m: &Mat, texts: &[String], level: Level) -> RResult<usize> {
+    let Some(StructKind::Ring(r)) = ring.as_struct() else { return Ok(0) };
+    let Some(base) = r.base().cloned() else { return Ok(0) };
+    let poly = match m.ctx().kind() {
+        CtxKind::Poly => true,
+        CtxKind::MPoly { .. } => false,
+        _ => return Ok(0),
+    };
+    let Some(fw) = field_width(it, &base, level)? else { return Ok(0) };
+    let mut w = 0;
+    for (k, s) in texts.iter().enumerate() {
+        let e = m.entry(k / m.ncols(), k % m.ncols());
+        let c = if poly {
+            if e.poly_len() == 0 {
+                continue;
+            }
+            e.poly_coeff(0)
+        } else {
+            // The constant term is the last.
+            match e.mpoly_len().checked_sub(1).map(|n| e.mpoly_term(n)) {
+                Some((c, exps)) if exps.iter().all(|&x| x == 0) => c,
+                _ => continue,
+            }
+        };
+        if c.is_zero() == Truth::True {
+            continue;
+        }
+        let t = it.format_flat(&it.elem_to_value(&base, c), level)?;
+        w = w.max(s.chars().count() + fw.saturating_sub(t.chars().count()));
+    }
+    Ok(w)
 }
 
 /// The entries of `m`, a matrix over `ring`, as text, row after row.
@@ -83,7 +121,9 @@ fn fmt_rows(it: &mut Interp, p: &mut Printer, ring: &Value, m: &Mat, vectors: bo
     if let Some(fw) = field_width(it, ring, level)? {
         w = w.max(fw);
     }
+    w = w.max(padded_poly_width(it, ring, m, &texts, level)?);
     let aligned = !unaligned && 2 + c * w + (c - 1) < p.width;
+    let sep = if !aligned && matches!(m.ctx().kind(), CtxKind::Poly | CtxKind::MPoly { .. }) { "   " } else { " " };
     let (open, close) = if vectors { ('(', ')') } else { ('[', ']') };
     let saved = p.cont;
     p.cont = if aligned { indent } else { indent + 4 };
@@ -95,7 +135,7 @@ fn fmt_rows(it: &mut Interp, p: &mut Printer, ring: &Value, m: &Mat, vectors: bo
         row.push(open);
         for (j, s) in texts[i * c..(i + 1) * c].iter().enumerate() {
             if j > 0 {
-                row.push(' ');
+                row.push_str(sep);
             }
             if aligned {
                 for _ in s.chars().count()..w {

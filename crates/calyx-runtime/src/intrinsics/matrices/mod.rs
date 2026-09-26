@@ -18,6 +18,7 @@
 mod access;
 mod arith;
 mod blocks;
+mod canonical;
 mod change;
 mod charpoly;
 mod creation;
@@ -404,6 +405,7 @@ pub fn register(it: &mut Interp) {
     linalg::register(it);
     numerical::register(it);
     charpoly::register(it);
+    canonical::register(it);
     predicates::register(it);
     spaces::register(it);
 }
