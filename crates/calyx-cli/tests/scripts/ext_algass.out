@@ -1,0 +1,35 @@
+2
+2
+
+>> #{x, 2*x, x, A!2, A!1}; #{A, A, B}; #{x, B.1};
+                                        ^
+Runtime error in { ... }: Cannot coerce argument 2 into the universe
+
+[ (1), (2), (-1) ]
+<(1), 3/4>
+[* (1),
+    Associative Algebra of dimension 1 with base ring Rational Field
+*]
+false
+true
+false
+false
+true
+true (3)
+false
+true 2
+false
+AlgAssElt
+AlgAss
+true
+true
+false
+(-1)
+(0)
+(1)
+(0)
+
+>> A eq B;
+     ^
+Runtime error in 'eq': Arguments have no covering structure
+

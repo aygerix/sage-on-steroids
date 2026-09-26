@@ -152,8 +152,8 @@ impl Interp {
         // Nearfield elements first: they meet no ring elements.
         let ring_result = if matches!(a, Value::Nfd(_)) || matches!(b, Value::Nfd(_)) {
             self.nfd_binop(op, &a, &b)?
-        } else if matches!(a, Value::Alg(_)) || matches!(b, Value::Alg(_)) {
-            crate::intrinsics::algass::binop(self, op, &a, &b)?
+        } else if let Some(k) = crate::ext::operand_kind(&a, &b) {
+            k.binop(self, op, &a, &b)?
         } else if matches!(a, Value::Sparse(_)) || matches!(b, Value::Sparse(_)) {
             crate::intrinsics::sparse::binop(self, op, &a, &b).map_err(|e| e.in_context(op.intrinsic_name()))?
         } else if matches!(a, Value::Mat(_)) || matches!(b, Value::Mat(_)) {
@@ -457,7 +457,10 @@ impl Interp {
             Value::Small(r, x) => Ok(Value::Small(r, r.neg(x))),
             Value::AbElt(x) => Ok(x.neg()),
             Value::Nfd(x) => crate::intrinsics::nearfields::negate(&x),
-            Value::Alg(x) => crate::intrinsics::algass::negate(&x),
+            Value::Ext(x) => match x.kind().negate(self, &x)? {
+                Some(v) => Ok(v),
+                None => self.unary_intrinsic("-", Value::Ext(x)),
+            },
             Value::Mat(m) => crate::intrinsics::matrices::negate(&m),
             Value::Sparse(m) => crate::intrinsics::sparse::negate(self, &m),
             other => self.unary_intrinsic("-", other),
@@ -547,8 +550,8 @@ impl Interp {
                 Ok(Some(false))
             }
         };
-        if matches!(a, Value::Alg(_)) || matches!(b, Value::Alg(_)) {
-            return crate::intrinsics::algass::compare_eq(self, a, b, strict);
+        if let Some(k) = crate::ext::operand_kind(a, b) && let Some(e) = k.compare_eq(self, a, b, strict)? {
+            return Ok(Some(e));
         }
         if matches!(a, Value::Sparse(_)) || matches!(b, Value::Sparse(_)) {
             return match crate::intrinsics::sparse::equal(self, a, b) {
@@ -579,8 +582,8 @@ impl Interp {
             if crate::intrinsics::nearfields::different_kinds(x, y) {
                 return incompatible(&format!("Bad argument types\nArgument types given: {}, {}", self.type_name(a), self.type_name(b)));
             }
-            if crate::intrinsics::algass::distinct(x, y) {
-                return incompatible("Arguments have no covering structure");
+            if !Rc::ptr_eq(x, y) && let (Some(j), Some(k)) = (crate::ext::kind(x), crate::ext::kind(y)) && let Some(msg) = j.incomparable(k) {
+                return incompatible(msg);
             }
             if let (StructKind::SymGroup(m), StructKind::SymGroup(n)) = (&x.kind, &y.kind) {
                 if m != n {

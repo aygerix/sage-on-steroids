@@ -25,6 +25,11 @@ macro_rules! builtin_types {
         fn builtin_table() -> Vec<(&'static str, Vec<TypeId>)> {
             vec![ $( ($name, vec![$(t::$parent),*]) ),* ]
         }
+        /// The name of a builtin type.
+        pub fn builtin_name(id: TypeId) -> Option<&'static str> {
+            const NAMES: &[&str] = &[$($name),*];
+            NAMES.get(id.0 as usize).copied()
+        }
     };
 }
 

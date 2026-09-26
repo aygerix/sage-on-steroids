@@ -7,6 +7,7 @@
 //! structure constants holds the coordinates of e_i e_j, so that x y is the
 //! row x times the matrix whose rows are y times each of those matrices.
 
+use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
 use calyx_flint::gr::{Ctx, Truth};
@@ -17,10 +18,13 @@ use calyx_syntax::ast::BinOp;
 use super::matrices::{entry_ctx, entry_of, set_entry};
 use super::{boolv, intv, one};
 use crate::error::{RResult, RuntimeError};
+use crate::ext::{self, Coerced, ExtElt, ExtKind};
 use crate::interp::{CallArgs, Interp};
 use crate::print::Printer;
+use crate::types::{TypeArg, TypeId, TypeVal, t};
 use crate::value::*;
 
+/// An associative algebra; its elements hold their coordinates, as a row.
 pub struct AlgAss {
     /// The base field.
     pub ring: Value,
@@ -29,12 +33,6 @@ pub struct AlgAss {
     mult: Vec<Mat>,
     /// The coordinates of the identity.
     one: Mat,
-}
-
-/// An element of an associative algebra: its coordinates, as a row.
-pub struct AlgAssElt {
-    pub parent: Rc<Struct>,
-    pub v: Mat,
 }
 
 impl AlgAss {
@@ -96,79 +94,67 @@ impl AlgAss {
 /// identity.
 pub fn new(it: &mut Interp, ring: &Value, mult: Vec<Mat>, one: Mat) -> RResult<Rc<Struct>> {
     let ctx = entry_ctx(it, ring)?;
-    Ok(Struct::new(StructKind::AlgAss(Rc::new(AlgAss { ring: ring.clone(), ctx, mult, one }))))
+    Ok(ext::structure(AlgAss { ring: ring.clone(), ctx, mult, one }))
 }
 
-fn alg(st: &Struct) -> &Rc<AlgAss> {
-    match &st.kind {
-        StructKind::AlgAss(a) => a,
-        _ => unreachable!("an associative algebra"),
-    }
+fn alg(st: &Struct) -> &AlgAss {
+    ext::expect_kind(st)
 }
 
 fn elt(st: &Rc<Struct>, v: Mat) -> Value {
-    Value::Alg(Rc::new(AlgAssElt { parent: st.clone(), v }))
+    ext::element(st, v)
 }
 
-/// The element type of an algebra's elements, as Magma names it in errors.
-pub fn elt_type(st: &Struct) -> crate::types::TypeVal {
-    use crate::types::{TypeArg, TypeVal, t};
-    TypeVal::Ext(t::ALG_ASS_ELT, Rc::from(vec![TypeArg::Type(TypeVal::Cat(alg(st).ring.type_id()))]))
+fn coords(x: &ExtElt) -> &Mat {
+    x.data()
 }
 
-/// Whether x and y are different algebras, which Magma does not compare.
-pub fn distinct(x: &Struct, y: &Struct) -> bool {
-    matches!((&x.kind, &y.kind), (StructKind::AlgAss(a), StructKind::AlgAss(b)) if !Rc::ptr_eq(a, b))
-}
-
-pub fn same(x: &AlgAssElt, y: &AlgAssElt) -> bool {
-    Rc::ptr_eq(&x.parent, &y.parent) && x.v.equal(&y.v) == Truth::True
+/// The element of an algebra that v is, if it is one.
+fn as_elt(v: &Value) -> Option<&ExtElt> {
+    match v {
+        Value::Ext(x) if ext::kind_of::<AlgAss>(&x.parent).is_some() => Some(x),
+        _ => None,
+    }
 }
 
 /// A hash of the coordinates over Q; elements over other fields hash by
 /// their algebra alone.
-pub fn hash_key(x: &AlgAssElt) -> (usize, Vec<Option<calyx_flint::Rational>>) {
-    let coords = (0..x.v.ncols()).map(|j| x.v.entry(0, j).to_rational().ok()).collect();
+fn hash_key(x: &ExtElt) -> (usize, Vec<Option<calyx_flint::Rational>>) {
+    let v = coords(x);
+    let coords = (0..v.ncols()).map(|j| v.entry(0, j).to_rational().ok()).collect();
     (Rc::as_ptr(&x.parent) as usize, coords)
 }
 
-pub fn negate(x: &AlgAssElt) -> RResult<Value> {
-    Ok(elt(&x.parent, x.v.neg()?))
+fn not_compatible(it: &Interp, op: BinOp, a: &Value, b: &Value) -> RuntimeError {
+    let msg = format!("Arguments are not compatible\nArgument types given: {}, {}", it.type_name_ext(a), it.type_name_ext(b));
+    RuntimeError::runtime(msg).in_context(op.intrinsic_name())
 }
 
-// ----- printing ---------------------------------------------------------------------------------
-
-pub fn fmt_algebra(it: &mut Interp, p: &mut Printer, st: &Struct, indent: usize) -> RResult<()> {
-    let a = alg(st);
-    p.write(&format!("Associative Algebra of dimension {} with base ring ", a.dim()));
-    it.fmt(p, &a.ring.clone(), indent)
-}
-
-/// An element prints as its coordinates in parentheses.
-pub fn fmt_elt(it: &mut Interp, p: &mut Printer, x: &AlgAssElt, indent: usize) -> RResult<()> {
-    let ring = alg(&x.parent).ring.clone();
-    p.write("(");
-    for j in 0..x.v.ncols() {
-        if j > 0 {
-            p.write(" ");
+/// The algebra of a and b, one of them an element of it, and the
+/// coordinates of both, if the other coerces into it.
+fn operands(it: &mut Interp, a: &Value, b: &Value) -> RResult<Option<(Rc<Struct>, Mat, Mat)>> {
+    let st = as_elt(a).or(as_elt(b)).expect("an element of an algebra").parent.clone();
+    let mut v = Vec::with_capacity(2);
+    for x in [a, b] {
+        match coerce(it, &st, x, false)? {
+            Ok(e) => v.push(coords(as_elt(&e).expect("an element of the algebra")).clone()),
+            _ => return Ok(None),
         }
-        let c = entry_of(it, &ring, &x.v, 0, j);
-        it.fmt(p, &c, indent)?;
     }
-    p.write(")");
-    Ok(())
+    let y = v.pop().expect("two operands");
+    let x = v.pop().expect("two operands");
+    Ok(Some((st, x, y)))
 }
-
-// ----- coercion ---------------------------------------------------------------------------------
 
 /// `A ! x`: an element of A, a sequence of coordinates, or an element of
 /// the base field (a multiple of the identity). Only `!` (`strict`)
 /// reports sequences of the wrong length.
-pub fn coerce(it: &mut Interp, st: &Rc<Struct>, x: &Value, strict: bool) -> RResult<Result<Value, Option<String>>> {
-    let a = alg(st).clone();
+fn coerce(it: &mut Interp, st: &Rc<Struct>, x: &Value, strict: bool) -> RResult<Coerced> {
+    let a = alg(st);
+    if let Some(e) = as_elt(x) {
+        return Ok(if Rc::ptr_eq(&e.parent, st) { Ok(x.clone()) } else { Err(None) });
+    }
     match x {
-        Value::Alg(e) if Rc::ptr_eq(&e.parent, st) => Ok(Ok(x.clone())),
-        Value::Alg(_) => Ok(Err(None)),
         Value::Seq(s) => {
             if s.elems.len() != a.dim() {
                 let msg = format!("Sequence argument length ({}) should be {} to be coerced into a matrix or vector", s.elems.len(), a.dim());
@@ -192,97 +178,126 @@ pub fn coerce(it: &mut Interp, st: &Rc<Struct>, x: &Value, strict: bool) -> RRes
     }
 }
 
-/// `S ! x` for an element x of an algebra and a structure S other than
-/// its algebra: a multiple c of the identity goes where c does.
-pub fn coerce_out(it: &mut Interp, s: &Value, x: &AlgAssElt) -> RResult<Result<Value, Option<String>>> {
-    let a = alg(&x.parent).clone();
-    match a.scalar(&x.v)? {
-        Some(c) => {
-            let c = it.elem_to_value(&a.ring, c);
-            it.try_coerce(s, &c)
-        }
-        None => Ok(Err(None)),
+impl ExtKind for AlgAss {
+    fn struct_type(&self) -> TypeId {
+        t::ALG_ASS
     }
-}
 
-// ----- operators --------------------------------------------------------------------------------
-
-fn not_compatible(it: &Interp, op: BinOp, a: &Value, b: &Value) -> RuntimeError {
-    let msg = format!("Arguments are not compatible\nArgument types given: {}, {}", it.type_name_ext(a), it.type_name_ext(b));
-    RuntimeError::runtime(msg).in_context(op.intrinsic_name())
-}
-
-/// Operators with an element of an algebra among the operands. The other
-/// operand coerces into the algebra, except for integer exponents.
-pub fn binop(it: &mut Interp, op: BinOp, a: &Value, b: &Value) -> RResult<Option<Value>> {
-    use BinOp::*;
-    if !matches!(op, Add | Sub | Mul | Div | Pow | Eq | Ne) {
-        return Ok(None);
+    fn elt_type(&self) -> TypeId {
+        t::ALG_ASS_ELT
     }
-    if let (Value::Alg(x), Value::Int(n)) = (a, b) && op == Pow {
-        let alg = alg(&x.parent).clone();
-        let base = if n.sign() < 0 {
-            match alg.inverse(&x.v)? {
-                Some(z) => z,
-                None if x.v.is_zero() == Truth::True => return Err(RuntimeError::runtime("Illegal negative power of zero element").in_context("^")),
-                None => return Err(RuntimeError::runtime("Element is not invertible").in_context("^")),
+
+    /// Magma names the base field in the element type in errors.
+    fn elt_type_ext(&self) -> TypeVal {
+        TypeVal::Ext(t::ALG_ASS_ELT, Rc::from(vec![TypeArg::Type(TypeVal::Cat(self.ring.type_id()))]))
+    }
+
+    /// Magma does not compare different algebras.
+    fn incomparable(&self, other: &dyn ExtKind) -> Option<&'static str> {
+        (other as &dyn std::any::Any).is::<AlgAss>().then_some("Arguments have no covering structure")
+    }
+
+    fn fmt_struct(&self, it: &mut Interp, p: &mut Printer, _st: &Struct, indent: usize) -> RResult<()> {
+        p.write(&format!("Associative Algebra of dimension {} with base ring ", self.dim()));
+        it.fmt(p, &self.ring.clone(), indent)
+    }
+
+    fn elt_same(&self, x: &ExtElt, y: &ExtElt) -> bool {
+        Rc::ptr_eq(&x.parent, &y.parent) && coords(x).equal(coords(y)) == Truth::True
+    }
+
+    fn elt_hash(&self, x: &ExtElt, mut state: &mut dyn Hasher) {
+        hash_key(x).hash(&mut state);
+    }
+
+    /// An element prints as its coordinates in parentheses.
+    fn fmt_elt(&self, it: &mut Interp, p: &mut Printer, x: &ExtElt, indent: usize) -> RResult<()> {
+        let v = coords(x);
+        p.write("(");
+        for j in 0..v.ncols() {
+            if j > 0 {
+                p.write(" ");
             }
-        } else {
-            x.v.clone()
+            let c = entry_of(it, &self.ring, v, 0, j);
+            it.fmt(p, &c, indent)?;
+        }
+        p.write(")");
+        Ok(())
+    }
+
+    fn coerce(&self, it: &mut Interp, st: &Rc<Struct>, x: &Value, strict: bool) -> RResult<Coerced> {
+        coerce(it, st, x, strict)
+    }
+
+    /// `S ! x` for a structure S other than the algebra of x: a multiple c
+    /// of the identity goes where c does.
+    fn coerce_out(&self, it: &mut Interp, s: &Value, x: &ExtElt) -> RResult<Coerced> {
+        match self.scalar(coords(x))? {
+            Some(c) => {
+                let c = it.elem_to_value(&self.ring, c);
+                it.try_coerce(s, &c)
+            }
+            None => Ok(Err(None)),
+        }
+    }
+
+    /// Operators with an element of an algebra among the operands. The
+    /// other operand coerces into the algebra, except for integer exponents.
+    fn binop(&self, it: &mut Interp, op: BinOp, a: &Value, b: &Value) -> RResult<Option<Value>> {
+        use BinOp::*;
+        if !matches!(op, Add | Sub | Mul | Div | Pow | Eq | Ne) {
+            return Ok(None);
+        }
+        if let (Some(x), Value::Int(n)) = (as_elt(a), b) && op == Pow {
+            let alg = alg(&x.parent);
+            let base = if n.sign() < 0 {
+                match alg.inverse(coords(x))? {
+                    Some(z) => z,
+                    None if coords(x).is_zero() == Truth::True => return Err(RuntimeError::runtime("Illegal negative power of zero element").in_context("^")),
+                    None => return Err(RuntimeError::runtime("Element is not invertible").in_context("^")),
+                }
+            } else {
+                coords(x).clone()
+            };
+            return Ok(Some(elt(&x.parent, alg.pow(&base, n)?)));
+        }
+        if matches!(op, Eq | Ne) {
+            let e = self.compare_eq(it, a, b, true)?.unwrap_or(false);
+            return Ok(Some(Value::Bool(e == (op == Eq))));
+        }
+        if let (Some(x), Some(y)) = (as_elt(a), as_elt(b)) && !Rc::ptr_eq(&x.parent, &y.parent) {
+            if op == Mul {
+                return Err(RuntimeError::runtime("Arguments have no covering structure").in_context("*"));
+            }
+            return Err(not_compatible(it, op, a, b));
+        }
+        let Some((st, x, y)) = operands(it, a, b)? else { return Err(it.bad_types(op, a, b)) };
+        let alg = alg(&st);
+        let r = match op {
+            Add => x.add(&y)?,
+            Sub => x.sub(&y)?,
+            Mul => alg.mul(&x, &y)?,
+            Div => match alg.inverse(&y)? {
+                Some(z) => alg.mul(&x, &z)?,
+                None => return Err(RuntimeError::runtime("Argument 2 is not a unit").in_context("/")),
+            },
+            _ => return Err(it.bad_types(op, a, b)),
         };
-        return Ok(Some(elt(&x.parent, alg.pow(&base, n)?)));
+        Ok(Some(elt(&st, r)))
     }
-    if matches!(op, Eq | Ne) {
-        let e = compare_eq(it, a, b, true)?.unwrap_or(false);
-        return Ok(Some(Value::Bool(e == (op == Eq))));
-    }
-    if let (Value::Alg(x), Value::Alg(y)) = (a, b) && !Rc::ptr_eq(&x.parent, &y.parent) {
-        if op == Mul {
-            return Err(RuntimeError::runtime("Arguments have no covering structure").in_context("*"));
-        }
-        return Err(not_compatible(it, op, a, b));
-    }
-    let Some((st, x, y)) = operands(it, a, b)? else { return Err(it.bad_types(op, a, b)) };
-    let alg = alg(&st).clone();
-    let r = match op {
-        Add => x.add(&y)?,
-        Sub => x.sub(&y)?,
-        Mul => alg.mul(&x, &y)?,
-        Div => match alg.inverse(&y)? {
-            Some(z) => alg.mul(&x, &z)?,
-            None => return Err(RuntimeError::runtime("Argument 2 is not a unit").in_context("/")),
-        },
-        _ => return Err(it.bad_types(op, a, b)),
-    };
-    Ok(Some(elt(&st, r)))
-}
 
-/// The algebra of a and b, one of them an element of it, and the
-/// coordinates of both, if the other coerces into it.
-fn operands(it: &mut Interp, a: &Value, b: &Value) -> RResult<Option<(Rc<Struct>, Mat, Mat)>> {
-    let st = match (a, b) {
-        (Value::Alg(x), _) | (_, Value::Alg(x)) => x.parent.clone(),
-        _ => unreachable!("an element of an algebra"),
-    };
-    let mut coords = Vec::with_capacity(2);
-    for v in [a, b] {
-        match coerce(it, &st, v, false)? {
-            Ok(Value::Alg(e)) => coords.push(e.v.clone()),
-            _ => return Ok(None),
-        }
+    fn negate(&self, _it: &mut Interp, x: &ExtElt) -> RResult<Option<Value>> {
+        Ok(Some(elt(&x.parent, coords(x).neg()?)))
     }
-    let y = coords.pop().expect("two operands");
-    let x = coords.pop().expect("two operands");
-    Ok(Some((st, x, y)))
-}
 
-/// `a eq b` (or `cmpeq`, not `strict`) with an element of an algebra:
-/// the other value must coerce into its algebra.
-pub fn compare_eq(it: &mut Interp, a: &Value, b: &Value, strict: bool) -> RResult<Option<bool>> {
-    match operands(it, a, b)? {
-        Some((_, x, y)) => Ok(Some(x.equal(&y) == Truth::True)),
-        None if strict => Err(not_compatible(it, BinOp::Eq, a, b)),
-        None => Ok(Some(false)),
+    /// `a eq b` (or `cmpeq`, not `strict`) with an element of an algebra:
+    /// the other value must coerce into its algebra.
+    fn compare_eq(&self, it: &mut Interp, a: &Value, b: &Value, strict: bool) -> RResult<Option<bool>> {
+        match operands(it, a, b)? {
+            Some((_, x, y)) => Ok(Some(x.equal(&y) == Truth::True)),
+            None if strict => Err(not_compatible(it, BinOp::Eq, a, b)),
+            None => Ok(Some(false)),
+        }
     }
 }
 

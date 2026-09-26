@@ -48,7 +48,7 @@ impl Interp {
             Value::Perm(p) => Value::Struct(p.group.clone()),
             Value::AbElt(e) => Value::Struct(e.group.clone()),
             Value::Nfd(e) => Value::Struct(e.parent.clone()),
-            Value::Alg(e) => Value::Struct(e.parent.clone()),
+            Value::Ext(e) => Value::Struct(e.parent.clone()),
             Value::Drch(e) => Value::Struct(e.group.clone()),
             Value::Mat(m) => Value::Struct(m.parent.clone()),
             Value::Sparse(m) => Value::Struct(m.parent.clone()),
@@ -77,7 +77,10 @@ impl Interp {
                 let st = st.clone();
                 self.coerce_into_nearfield(&st, x, true)?
             }
-            Value::Struct(st) if matches!(st.kind, StructKind::AlgAss(_)) => crate::intrinsics::algass::coerce(self, &st.clone(), x, true)?,
+            Value::Struct(st) if matches!(st.kind, StructKind::Ext(_)) => {
+                let st = st.clone();
+                crate::ext::kind(&st).expect("an Ext structure").coerce(self, &st, x, true)?
+            }
             Value::Seq(_) | Value::Set(_) | Value::ISet(_) | Value::MSet(_) => return self.coerce_into_aggregate(s, x),
             _ => self.try_coerce(s, x)?,
         };
@@ -203,8 +206,8 @@ impl Interp {
             return Ok(Err(Some("Cannot coerce an undefined value".into())));
         }
         let fail = || Ok(Err(None));
-        if let Value::Alg(e) = x && !matches!(s.as_struct(), Some(StructKind::AlgAss(_))) {
-            return crate::intrinsics::algass::coerce_out(self, s, e);
+        if let Value::Ext(e) = x && !crate::ext::is_of_kind(s, e.kind()) {
+            return e.kind().coerce_out(self, s, e);
         }
         match s {
             Value::Struct(st) => match &st.kind {
@@ -212,7 +215,7 @@ impl Interp {
                 StructKind::SymGroup(n) => self.coerce_into_sym(*n as usize, x),
                 StructKind::AbGroup(_) => self.coerce_into_abgroup(st, x, false),
                 StructKind::Nearfield(_) => self.coerce_into_nearfield(st, x, false),
-                StructKind::AlgAss(_) => crate::intrinsics::algass::coerce(self, st, x, false),
+                StructKind::Ext(k) => k.coerce(self, st, x, false),
                 StructKind::DrchGroup(_) => crate::intrinsics::residue::dirichlet::coerce(self, st, x),
                 StructKind::Matrices(_) => crate::intrinsics::matrices::coerce(self, st, x),
                 StructKind::SparseMatrices(_) => crate::intrinsics::sparse::coerce(self, st, x),
@@ -1009,7 +1012,7 @@ impl Interp {
                 StructKind::AffIdeal(_) => TypeVal::Cat(t::RNG_MPOL_RES_ELT),
                 StructKind::AbGroup(_) => TypeVal::Cat(t::GRP_AB_ELT),
                 StructKind::Nearfield(_) => TypeVal::Cat(t::NFD_ELT),
-                StructKind::AlgAss(_) => crate::intrinsics::algass::elt_type(s),
+                StructKind::Ext(k) => k.elt_type_ext(),
                 StructKind::Automorphisms(_) => TypeVal::Cat(t::MAP),
                 StructKind::DrchGroup(_) => TypeVal::Cat(t::GRP_DRCH_ELT),
                 // Magma shows the ring of vectors and square matrices, not of the others.
@@ -1068,7 +1071,7 @@ impl Interp {
             // Matrices show their coefficient ring.
             Value::Mat(m) => TypeVal::Ext(v.type_id(), Rc::from(vec![TypeArg::Type(TypeVal::Cat(m.ring().type_id()))])),
             Value::Sparse(m) => TypeVal::Ext(v.type_id(), Rc::from(vec![TypeArg::Type(TypeVal::Cat(m.ring().type_id()))])),
-            Value::Alg(e) => crate::intrinsics::algass::elt_type(&e.parent),
+            Value::Ext(e) => e.kind().elt_type_ext(),
             Value::Struct(s) => match &s.kind {
                 StructKind::Matrices(m) => TypeVal::Ext(v.type_id(), Rc::from(vec![TypeArg::Type(TypeVal::Cat(m.ring.type_id()))])),
                 StructKind::SparseMatrices(m) => TypeVal::Ext(v.type_id(), Rc::from(vec![TypeArg::Type(TypeVal::Cat(m.ring.type_id()))])),
@@ -1135,7 +1138,7 @@ impl Interp {
                 StructKind::AffIdeal(_) => TypeVal::Cat(t::RNG_MPOL_RES_ELT),
                 StructKind::AbGroup(_) => TypeVal::Cat(t::GRP_AB_ELT),
                 StructKind::Nearfield(_) => TypeVal::Cat(t::NFD_ELT),
-                StructKind::AlgAss(_) => crate::intrinsics::algass::elt_type(s),
+                StructKind::Ext(k) => k.elt_type_ext(),
                 StructKind::Automorphisms(_) => TypeVal::Cat(t::MAP),
                 StructKind::DrchGroup(_) => TypeVal::Cat(t::GRP_DRCH_ELT),
                 // Magma shows the ring of vectors and square matrices, not of the others.

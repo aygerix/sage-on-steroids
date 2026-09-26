@@ -9,6 +9,7 @@ pub mod abgroups;
 pub mod coerce;
 pub mod compile;
 pub mod error;
+pub mod ext;
 pub mod interp;
 pub mod intrinsics;
 pub mod ir;
@@ -63,7 +64,7 @@ pub fn value_kind(v: &Value) -> &'static str {
         Value::Perm(_) => "GrpPermElt",
         Value::AbElt(_) => "GrpAbElt",
         Value::Nfd(_) => "NfdElt",
-        Value::Alg(_) => "AlgAssElt",
+        Value::Ext(x) => types::builtin_name(x.kind().elt_type()).unwrap_or("object"),
         Value::Drch(_) => "GrpDrchElt",
         Value::Mat(_) => "Mtrx",
         Value::Sparse(_) => "MtrxSprs",
