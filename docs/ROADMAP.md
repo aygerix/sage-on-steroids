@@ -135,6 +135,16 @@ part.
 | Vector spaces | Not started ([#78](https://github.com/aygerix/calyx-math/issues/78)). |
 | Polar spaces | Not started ([#79](https://github.com/aygerix/calyx-math/issues/79)). The sections on isometry groups, classical groups and Lie algebras wait for Parts IX and XIII. |
 
+## Part V: Lattices and Quadratic Forms (planned)
+
+| Chapter | Status |
+| --- | --- |
+| Lattices | Not started ([#96](https://github.com/aygerix/calyx-math/issues/96)). Theta series as modular forms wait for a later part. |
+| Lattices over number fields | Not started ([#97](https://github.com/aygerix/calyx-math/issues/97)). Most of it waits for the number fields of Part VI. |
+| Lattices with group action | Not started ([#98](https://github.com/aygerix/calyx-math/issues/98)). Lattices from matrix groups wait for Part IX. |
+| Quadratic forms | Not started ([#99](https://github.com/aygerix/calyx-math/issues/99)). |
+| Binary quadratic forms | Not started ([#100](https://github.com/aygerix/calyx-math/issues/100)). Quadratic orders and their ideals wait for Part VI. |
+
 ## Open work
 
 Everything still to do is a GitHub issue, labelled by area (`area:
