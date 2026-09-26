@@ -109,6 +109,38 @@ pub fn real_arg(v: &Value) -> Option<Real> {
     }
 }
 
+fn bad_types(it: &Interp, a: &CallArgs) -> RuntimeError {
+    let types: Vec<String> = a.args.iter().map(|v| it.type_name_ext(v)).collect();
+    RuntimeError::runtime(format!("Bad argument types\nArgument types given: {}", types.join(", ")))
+}
+
+/// An integer, rational, real, or a complex number whose imaginary part is
+/// zero, as a real of the given precision.
+fn to_real_if_real(v: &Value, bits: u64) -> Option<Real> {
+    match v {
+        Value::Complex(c) if c.im.is_zero() => Some(c.re.round_to(bits)),
+        Value::Complex(_) => None,
+        _ => to_real(v, bits),
+    }
+}
+
+/// When a real binary intrinsic is given a complex argument, Magma coerces
+/// both arguments into the default real field before calling it.
+fn coerce_complex_real_args(it: &Interp, a: &mut CallArgs, arctan: bool) -> RResult<bool> {
+    if !a.args.iter().any(|v| matches!(v, Value::Complex(_))) {
+        return Ok(false);
+    }
+    let bits = default_bits();
+    let Some(v): Option<Vec<Real>> = a.args.iter().map(|x| to_real_if_real(x, bits)).collect() else {
+        if arctan {
+            return Err(RuntimeError::runtime("Bad argument types\nArgument types given: FldComElt, FldComElt"));
+        }
+        return Err(bad_types(it, a));
+    };
+    a.args = v.into_iter().map(Value::real).collect();
+    Ok(true)
+}
+
 /// The precision in bits of a real or complex number.
 pub fn prec_of(v: &Value) -> Option<u64> {
     match v {
@@ -340,13 +372,22 @@ fn change_precision(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
     })
 }
 
-fn mantissa_exponent(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
-    let Value::Real(r) = &a.args[0] else { unreachable!() };
-    if !r.x.is_regular() {
+fn mantissa_exponent(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let bits = prec_of(&a.args[0]).unwrap();
+    let x = to_real_if_real(&a.args[0], bits).ok_or_else(|| bad_types(it, a))?;
+    if !x.is_regular() {
         return Ok(vals![Value::int(0), Value::Infinity(false)]);
     }
-    let (m, e) = r.x.mantissa_exponent();
+    let (m, e) = x.mantissa_exponent();
     Ok(vals![Value::Int(m), Value::int(e)])
+}
+
+fn complex_real_rounding(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let Value::Complex(c) = &a.args[0] else { unreachable!() };
+    if !c.im.is_zero() {
+        return Err(bad_types(it, a));
+    }
+    one(Value::Int(if &*a.name.as_rc() == "Floor" { c.re.floor() } else { c.re.ceil() }))
 }
 
 /// Argument `i` as a real number, with integers and rationals in the
@@ -617,10 +658,17 @@ fn common_real_bits(a: &CallArgs) -> u64 {
     x.zip(y).map(|(x, y)| x.min(y)).or(x).or(y).unwrap_or_else(default_bits)
 }
 
+/// The precision of Arctan(x, y): that of the first real argument, or the
+/// default precision if both arguments are exact.
+fn first_real_bits(a: &CallArgs) -> u64 {
+    a.args.iter().find_map(|v| match v { Value::Real(r) => Some(r.x.prec()), _ => None }).unwrap_or_else(default_bits)
+}
+
 /// `Log(b, x)`: the logarithm of x to the base b, the quotient of the two
 /// logarithms, in the field of b and x if they are the same, else in the
 /// default real field.
-fn log_base(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+fn log_base(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    coerce_complex_real_args(it, a, false)?;
     let bits = shared_bits(&a.args);
     let (b, x) = (to_real(&a.args[0], bits).unwrap(), to_real(&a.args[1], bits).unwrap());
     if b.sign() <= 0 {
@@ -638,8 +686,9 @@ fn log_base(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
 
 /// `Arctan(x, y)`: the angle of the point (x, y), in (-pi, pi]. Magma
 /// computes it with PARI, whose zeros have no sign: `Arctan(-1, -0)` is pi.
-fn arctan2(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
-    let bits = common_real_bits(a);
+fn arctan2(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let complex = coerce_complex_real_args(it, a, true)?;
+    let bits = if complex { default_bits() } else { first_real_bits(a) };
     let unsigned = |v: &Value| to_real(v, bits).map(|r| if r.is_zero() { Real::zero(bits) } else { r }).unwrap();
     let (x, y) = (unsigned(&a.args[0]), unsigned(&a.args[1]));
     if x.is_zero() && y.is_zero() {
@@ -717,6 +766,7 @@ fn shared_bits(v: &[Value]) -> u64 {
 /// or with `Complementary` `∫_t^∞ u^(s-1) e^-u du`. Given the value `g` of
 /// `Γ(s)` as `Gamma`, the lower one is `g` minus the upper one.
 fn incomplete_gamma(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    coerce_complex_real_args(it, a, false)?;
     let upper = match a.param("Complementary") {
         Some(Value::Bool(b)) => *b,
         _ => return Err(bad_param(it, a, "Complementary")),
@@ -762,9 +812,10 @@ fn bessel_order(a: &CallArgs) -> RResult<i64> {
 
 /// `BesselFunction(n, x)` and `BesselFunctionSecondKind(n, x)`: `J_n(x)`
 /// and `Y_n(x)` (MPFR's, so `Y_n(x)` is NaN for x < 0).
-fn bessel_function(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+fn bessel_function(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let bits = prec_of(&a.args[1]).unwrap_or_else(default_bits);
+    let x = to_real_if_real(&a.args[1], bits).ok_or_else(|| bad_types(it, a))?;
     let n = bessel_order(a)?;
-    let x = real_at(a, 1);
     one(Value::real(if &*a.name.as_rc() == "BesselFunction" { Real::bessel_jn(n, &x) } else { Real::bessel_yn(n, &x) }))
 }
 
@@ -1626,7 +1677,12 @@ pub fn register(it: &mut Interp) {
     }
 
     // Elements.
-    it.def("MantissaExponent", "x::FldReElt -> RngIntElt, RngIntElt", "Integers m, e with x = m*2^e, m of the precision of x.", mantissa_exponent);
+    for t in ["FldReElt", "FldComElt"] {
+        it.def("MantissaExponent", &format!("x::{t} -> RngIntElt, RngIntElt"), "Integers m, e with x = m*2^e, m of the precision of x.", mantissa_exponent);
+    }
+    for name in ["Floor", "Ceiling"] {
+        it.def(name, "x::FldComElt -> RngIntElt", "The corresponding integer for a complex number whose imaginary part is zero.", complex_real_rounding);
+    }
     it.def("IsIntegral", "x::FldReElt -> BoolElt", "Whether x is an integer.", is_integral);
     it.def("ComplexConjugate", "x::FldReElt -> FldReElt", "x itself.", conjugate);
     it.def("Norm", "x::FldReElt -> FldReElt", "The absolute value of x.", abs);
@@ -1665,6 +1721,14 @@ pub fn register(it: &mut Interp) {
             }
         }
     }
+    for sig in ["b::FldComElt, x::. -> FldReElt", "b::., x::FldComElt -> FldReElt"] {
+        it.def("Log", sig, "The logarithm of x to the base b when complex arguments are real.", log_base);
+    }
+    for name in ["Arctan", "Arctan2"] {
+        for sig in ["x::FldComElt, y::. -> FldReElt", "x::., y::FldComElt -> FldReElt"] {
+            it.def(name, sig, "The angle of a point whose complex coordinates are real.", arctan2);
+        }
+    }
 
     // Gamma, Bessel and associated functions; integers and rationals are in
     // the default field.
@@ -1686,6 +1750,10 @@ pub fn register(it: &mut Interp) {
         it.def("BesselFunction", &format!("n::RngIntElt, x::{t} -> FldReElt"), "The Bessel function of the first kind J_n(x).", bessel_function);
         it.def("BesselFunctionSecondKind", &format!("n::RngIntElt, x::{t} -> FldReElt"), "The Bessel function of the second kind Y_n(x).", bessel_function);
     }
+    for sig in ["s::FldComElt, t::. -> FldReElt", "s::., t::FldComElt -> FldReElt"] {
+        it.def_params("Gamma", sig, &incomplete, "The incomplete gamma function when complex arguments are real.", incomplete_gamma);
+    }
+    it.def("BesselFunction", "n::RngIntElt, x::FldComElt -> FldReElt", "The Bessel function J_n(x) when x is real.", bessel_function);
     for t in ["RngIntElt", "FldReElt"] {
         it.def("JBessel", &format!("n::{t}, x::FldReElt -> FldReElt"), "The Bessel function of the first kind of half-integral order J_(n+1/2)(x).", j_bessel);
     }
