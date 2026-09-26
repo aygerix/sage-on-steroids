@@ -461,11 +461,18 @@ impl Mat {
     /// The inverse of a square matrix; `Domain` if it has none.
     pub fn inv(&self) -> GrResult<Mat> {
         let mut m = Mat::zero(&self.ctx, self.nrows(), self.ncols());
-        if let CtxKind::Nmod(_) = self.ctx.kind() {
-            let ok = unsafe { sys::nmod_mat_inv(&mut m.nmod_view(), &self.nmod_view()) };
-            return if ok != 0 { Ok(m) } else { Err(GrError::Domain) };
+        let ok = match self.ctx.kind() {
+            CtxKind::Nmod(_) => unsafe { sys::nmod_mat_inv(&mut m.nmod_view(), &self.nmod_view()) },
+            // Multimodular, where the generic elimination over Q is slow.
+            CtxKind::Rationals => unsafe { sys::fmpq_mat_inv(&mut m.fmpq_view(), &self.fmpq_view()) },
+            _ => {
+                check(unsafe { sys::gr_mat_inv(&mut m.raw, &self.raw, self.ctx.ptr()) })?;
+                return Ok(m);
+            }
+        };
+        if ok == 0 {
+            return Err(GrError::Domain);
         }
-        check(unsafe { sys::gr_mat_inv(&mut m.raw, &self.raw, self.ctx.ptr()) })?;
         Ok(m)
     }
 
