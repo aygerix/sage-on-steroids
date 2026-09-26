@@ -10,3 +10,6 @@ Partitions(75);
 Partitions(1000);
 RestrictedPartitions(2^29, {1});
 RestrictedPartitions(2^29, 2^29, {1});
+Partitions(10^9, 1); x := Partitions(10^6, 10^6); #x, #x[1]; #Partitions(10^6, 999998);
+Partitions(10^9, 2);
+Partitions(2^30 - 1, 2^30 - 1);
