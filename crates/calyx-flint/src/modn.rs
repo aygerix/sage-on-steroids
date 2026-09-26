@@ -401,11 +401,12 @@ impl ModPoly {
         let mut s = seed | 1;
         let mut fails = 0;
         while f.len() > 2 {
+            // FLINT wants c reduced, which a word need not be for n below 2^64.
             let c = {
                 s ^= s << 13;
                 s ^= s >> 7;
                 s ^= s << 17;
-                Integer::from_u64(s)
+                Integer::from_u64(s).div_rem_euclid(n).unwrap().1
             };
             unsafe {
                 sys::fmpz_mod_poly_reverse(&mut t.f, &f.f, f.f.length, ctx);
@@ -586,7 +587,7 @@ mod tests {
             assert!(v.is_zero(), "root {r}");
         }
         assert_eq!(ModPoly::new(&ModCtx::new(&Integer::from_u64(5)), &h).distinct_roots(), None);
-        for seed in 1..20 {
+        for seed in 1..200 {
             let r = ModPoly::new(&ModCtx::new(&p), &h).one_root(seed).unwrap();
             assert!(roots.contains(&r), "root {r}");
         }
