@@ -9,3 +9,6 @@ M<d> := 5; M;
 G<g> := GF(9); g^2;
 H< h > := GF(8); h^3;
 U<u>, V<v> := Explode([PolynomialRing(GF(2)), PolynomialRing(GF(3))]); u + 1; v + 1;
+Z<t> := Integers(); Z; assigned t; t;
+Q<q> := Rationals(); Q; assigned q;
+T<[z]> := Integers(10); T; assigned z;
