@@ -14,6 +14,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   FLINT_VERSION: 3.6.0
+  OPENBLAS_NUM_THREADS: 1
 
 jobs:
   test:
@@ -25,30 +26,29 @@ jobs:
       matrix:
         os: [ubuntu-24.04]
         profile: [release, debug]
+        flint_target: [linux-x86-64-avx2]
         include:
           - os: ubuntu-24.04-arm
             profile: release
+            flint_target: linux-arm64
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install GMP and MPFR
-        run: sudo apt-get update && sudo apt-get install -y libgmp-dev libmpfr-dev
+      - name: Install GMP, MPFR and OpenBLAS
+        run: sudo apt-get update && sudo apt-get install -y libgmp-dev libmpfr-dev libopenblas-dev
 
       - name: Cache FLINT
         id: flint
         uses: actions/cache@v4
         with:
           path: ~/flint
-          key: flint-${{ env.FLINT_VERSION }}-${{ matrix.os }}
+          key: flint-${{ env.FLINT_VERSION }}-${{ matrix.flint_target }}-${{ hashFiles('build/flint/**') }}
 
       - name: Build FLINT
         if: steps.flint.outputs.cache-hit != 'true'
-        run: |
-          curl -fsSL "https://github.com/flintlib/flint/releases/download/v$FLINT_VERSION/flint-$FLINT_VERSION.tar.gz" | tar xz
-          cd "flint-$FLINT_VERSION"
-          ./configure --prefix="$HOME/flint" --disable-static
-          make -j"$(nproc)"
-          make install
+        env:
+          FLINT_TARBALL_URL: https://github.com/flintlib/flint/releases/download/v${{ env.FLINT_VERSION }}/flint-${{ env.FLINT_VERSION }}.tar.gz
+        run: build/flint/${{ matrix.flint_target }}.sh "$HOME/flint"
 
       - name: Use FLINT
         run: |
@@ -80,8 +80,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install FLINT
-        run: brew install flint pkgconf
+      - name: Install GMP, MPFR and pkg-config
+        run: brew install gmp mpfr pkgconf
+
+      - name: Cache FLINT
+        id: flint
+        uses: actions/cache@v4
+        with:
+          path: ~/flint
+          key: flint-${{ env.FLINT_VERSION }}-apple-arm64-${{ hashFiles('build/flint/**') }}
+
+      - name: Build FLINT
+        if: steps.flint.outputs.cache-hit != 'true'
+        env:
+          FLINT_TARBALL_URL: https://github.com/flintlib/flint/releases/download/v${{ env.FLINT_VERSION }}/flint-${{ env.FLINT_VERSION }}.tar.gz
+        run: build/flint/apple-arm64.sh "$HOME/flint"
+
+      - name: Use FLINT
+        run: |
+          echo "PKG_CONFIG_PATH=$HOME/flint/lib/pkgconfig" >> "$GITHUB_ENV"
+          echo "DYLD_LIBRARY_PATH=$HOME/flint/lib" >> "$GITHUB_ENV"
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -94,3 +112,40 @@ jobs:
 
       - name: Test
         run: cargo test --release --no-fail-fast
+
+  avx512:
+    name: build (Linux x86-64 AVX-512, release)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install GMP, MPFR and OpenBLAS
+        run: sudo apt-get update && sudo apt-get install -y libgmp-dev libmpfr-dev libopenblas-dev
+
+      - name: Cache FLINT
+        id: flint
+        uses: actions/cache@v4
+        with:
+          path: ~/flint
+          key: flint-${{ env.FLINT_VERSION }}-linux-x86-64-avx512-${{ hashFiles('build/flint/**') }}
+
+      - name: Build FLINT
+        if: steps.flint.outputs.cache-hit != 'true'
+        env:
+          FLINT_TARBALL_URL: https://github.com/flintlib/flint/releases/download/v${{ env.FLINT_VERSION }}/flint-${{ env.FLINT_VERSION }}.tar.gz
+        run: build/flint/linux-x86-64-avx512.sh "$HOME/flint"
+
+      - name: Use FLINT
+        run: |
+          echo "PKG_CONFIG_PATH=$HOME/flint/lib/pkgconfig" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$HOME/flint/lib" >> "$GITHUB_ENV"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: linux-x86-64-avx512-release
+
+      - name: Build
+        run: cargo build --release
