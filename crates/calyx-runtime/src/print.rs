@@ -42,10 +42,11 @@ impl Level {
 
 /// Accumulates output, wrapping lines as Magma does: a line that would
 /// exceed the width is broken at its last space (which stays at the end of
-/// the line) if the word after it starts in the second half of the line.
-/// A word that starts in the first half fills the line instead, up to the
-/// column before the last, and continues after a backslash. Continued lines
-/// start with the `cont` spaces in force where their word started.
+/// the line) if the word after it starts in the second half of the line
+/// (of the part after its indentation). A word that starts in the first
+/// half fills the line instead, up to the column before the last, and
+/// continues after a backslash. Continued lines start with the `cont`
+/// spaces in force where their word started.
 pub struct Printer {
     pub buf: String,
     pub col: usize,
@@ -56,6 +57,8 @@ pub struct Printer {
     /// Byte offset in `buf` where the text of the current line starts
     /// (after its indentation); spaces before it are not break points.
     line_start: usize,
+    /// Indentation of the current line.
+    line_indent: usize,
     /// No line breaking (`Sprint`, and inside quoted strings).
     pub no_wrap: bool,
     /// Lines start without indentation, as in `Sprint` and `Sprintf`.
@@ -67,7 +70,7 @@ pub struct Printer {
 
 impl Printer {
     pub fn new(col: usize, width: usize, level: Level) -> Printer {
-        Printer { buf: String::new(), col, width: width.max(20), level, cont: 0, line_start: 0, no_wrap: false, bare: false, word_cont: None }
+        Printer { buf: String::new(), col, width: width.max(20), level, cont: 0, line_start: 0, line_indent: 0, no_wrap: false, bare: false, word_cont: None }
     }
 
     pub fn write(&mut self, s: &str) {
@@ -81,6 +84,7 @@ impl Printer {
             self.buf.push('\n');
             self.col = 0;
             self.line_start = self.buf.len();
+            self.line_indent = 0;
             self.word_cont = None;
             return;
         }
@@ -127,7 +131,13 @@ impl Printer {
     /// starts in the second half of the line.
     fn late(&self) -> bool {
         let w = self.buf[self.line_start..].rfind(' ').map_or(self.line_start, |j| self.line_start + j + 1);
-        self.col.saturating_sub(self.buf[w..].chars().count()) > self.width / 2
+        self.starts_late(self.col.saturating_sub(self.buf[w..].chars().count()))
+    }
+
+    /// Whether column `start` is in the second half of the part of the line
+    /// after its indentation.
+    fn starts_late(&self, start: usize) -> bool {
+        start.saturating_sub(self.line_indent) > self.width.saturating_sub(self.line_indent) / 2
     }
 
     /// Continue on the next line, indented as where the word being written
@@ -140,6 +150,7 @@ impl Printer {
         }
         self.col = indent;
         self.line_start = self.buf.len();
+        self.line_indent = indent;
     }
 
     pub fn newline(&mut self, indent: usize) {
@@ -155,6 +166,7 @@ impl Printer {
         }
         self.col = indent;
         self.line_start = self.buf.len();
+        self.line_indent = indent;
     }
 
     /// Write an atomic piece of text, such as an integer. The word it ends
@@ -170,7 +182,7 @@ impl Printer {
         }
         self.word_cont.get_or_insert(self.cont);
         let space = self.buf[self.line_start..].rfind(' ').map(|j| self.line_start + j + 1);
-        let late = self.col.saturating_sub(self.buf[space.unwrap_or(self.line_start)..].chars().count()) > self.width / 2;
+        let late = self.starts_late(self.col.saturating_sub(self.buf[space.unwrap_or(self.line_start)..].chars().count()));
         if self.col + n < self.width + late as usize {
             self.write(s);
             return;
@@ -203,9 +215,16 @@ impl Printer {
         self.no_wrap = true;
         self.write(s);
         self.no_wrap = saved;
-        self.col = 0;
+        self.empty_line();
         self.line_start = self.buf.len();
         self.word_cont = None;
+    }
+
+    /// Count the line as empty from here on, as Magma does after quoted
+    /// strings and some text its package code prints.
+    pub fn empty_line(&mut self) {
+        self.col = 0;
+        self.line_indent = 0;
     }
 
     /// Write text that breaks at spaces, each word placed as an atom (a
@@ -684,7 +703,7 @@ impl Interp {
             // empty after them, as after nearfields.
             Value::Drch(x) => {
                 p.write(&crate::intrinsics::residue::dirichlet::format(x));
-                p.col = 0;
+                p.empty_line();
             }
             // Magma prints nearfield elements as text: unlike field elements,
             // their continuation lines are not indented further, and the
@@ -701,7 +720,7 @@ impl Interp {
                     }
                     v => self.fmt(p, &v, indent)?,
                 }
-                p.col = 0;
+                p.empty_line();
             }
             Value::Elt(e) => {
                 let s = crate::rings::format_ring_elt(self, e, p.level)?;
@@ -933,7 +952,7 @@ impl Interp {
                 p.level = Level::Default;
                 self.fmt(p, &ring, indent)?;
                 p.level = saved;
-                p.col = 0;
+                p.empty_line();
             }
             StructKind::Matrices(_) => crate::intrinsics::matrices::fmt_parent(self, p, s, indent)?,
             // Magma's package code prints nearfields (without the order at
@@ -946,7 +965,7 @@ impl Interp {
                     p.newline(indent);
                     p.write(&order);
                 }
-                p.col = 0;
+                p.empty_line();
             }
             StructKind::Integers => p.write("Integer Ring"),
             StructKind::Rationals => p.write("Rational Field"),
