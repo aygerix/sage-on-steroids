@@ -760,7 +760,7 @@ impl Interp {
         let (strs, lt): (Vec<String>, _) = match names {
             GenNamesEx::List(ps, lt) => (ps.iter().map(|(p, _)| p.name().to_string()).collect(), *lt),
             GenNamesEx::Seq(p, _, lt) => {
-                let n = self.num_generators(&v).map_err(|e| e.at(*lt))?;
+                let n = self.num_generator_names(&v).map_err(|e| e.at(*lt))?;
                 ((1..=n).map(|i| format!("{}[{i}]", p.name())).collect(), *lt)
             }
         };
@@ -769,7 +769,7 @@ impl Interp {
         match names {
             GenNamesEx::List(ps, _) => {
                 for (i, (p, sp)) in ps.iter().enumerate() {
-                    let g = self.generator(&v, i + 1).map_err(|e| {
+                    let g = self.name_generator(&v, i + 1).map_err(|e| {
                         let e = if e.span.is_none() && e.message.starts_with("Bad argument types") { RuntimeError::runtime("Bad argument types").in_context("Name") } else { e };
                         e.at(*sp)
                     })?;
@@ -787,6 +787,22 @@ impl Interp {
             }
         }
         Ok(())
+    }
+
+    fn num_generator_names(&mut self, v: &Value) -> RResult<usize> {
+        if matches!(v.as_struct(), Some(crate::value::StructKind::Ring(r)) if matches!(r.kind, crate::rings::RingKind::Residue(_))) {
+            let e = RuntimeError::runtime("Bad argument types\nArgument types given: RngIntRes").in_context("NumberOfNames");
+            return Err(crate::intrinsics::hidden_inner(e));
+        }
+        self.num_generators(v)
+    }
+
+    fn name_generator(&mut self, v: &Value, i: usize) -> RResult<Value> {
+        match v.as_struct() {
+            Some(crate::value::StructKind::Integers) if i == 1 => Ok(Value::int(1)),
+            Some(crate::value::StructKind::Rationals) => Err(RuntimeError::runtime("Bad argument types")),
+            _ => self.generator(v, i),
+        }
     }
 
     pub fn num_generators(&mut self, v: &Value) -> RResult<usize> {

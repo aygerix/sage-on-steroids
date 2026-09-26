@@ -156,6 +156,10 @@ fn set_auto_columns(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
     none()
 }
 
+fn get_auto_columns(it: &mut Interp, _a: &mut CallArgs) -> RResult<Vals> {
+    boolv(it.out.auto_columns)
+}
+
 fn set_quit_on_error(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
     it.quit_on_error = a.bool(0)?;
     none()
@@ -190,14 +194,59 @@ fn set_prompt(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
     none()
 }
 
+fn get_prompt(it: &mut Interp, _a: &mut CallArgs) -> RResult<Vals> {
+    one(Value::str(&it.prompt))
+}
+
 fn set_path(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
-    it.search_path = a.str(0)?.split([' ', ':']).filter(|s| !s.is_empty()).map(std::path::PathBuf::from).collect();
+    it.search_path = a.str(0)?.split(':').filter(|s| !s.is_empty()).map(std::path::PathBuf::from).collect();
     none()
 }
 
 fn get_path(it: &mut Interp, _a: &mut CallArgs) -> RResult<Vals> {
     let s: Vec<String> = it.search_path.iter().map(|p| p.display().to_string()).collect();
-    one(Value::str(&s.join(" ")))
+    one(Value::str(&s.join(":")))
+}
+
+fn set_library_root(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    it.library_root = std::path::PathBuf::from(a.str(0)?);
+    none()
+}
+
+fn get_library_root(it: &mut Interp, _a: &mut CallArgs) -> RResult<Vals> {
+    one(Value::str(&it.library_root.display().to_string()))
+}
+
+fn set_libraries(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    it.libraries = a.str(0)?.split(':').filter(|s| !s.is_empty()).map(std::path::PathBuf::from).collect();
+    none()
+}
+
+fn get_libraries(it: &mut Interp, _a: &mut CallArgs) -> RResult<Vals> {
+    let s: Vec<String> = it.libraries.iter().map(|p| p.display().to_string()).collect();
+    one(Value::str(&s.join(":")))
+}
+
+fn get_temp_dir(it: &mut Interp, _a: &mut CallArgs) -> RResult<Vals> {
+    one(Value::str(&it.temp_dir.display().to_string()))
+}
+
+fn set_history_size(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    it.history_size = a.usize(0)?;
+    none()
+}
+
+fn get_history_size(it: &mut Interp, _a: &mut CallArgs) -> RResult<Vals> {
+    one(Value::int(it.history_size as i64))
+}
+
+fn set_vi_mode(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    it.vi_mode = a.bool(0)?;
+    none()
+}
+
+fn get_vi_mode(it: &mut Interp, _a: &mut CallArgs) -> RResult<Vals> {
+    boolv(it.vi_mode)
 }
 
 fn show_identifiers(it: &mut Interp, _a: &mut CallArgs) -> RResult<Vals> {
@@ -340,6 +389,7 @@ pub fn register(it: &mut Interp) {
     it.def("SetColumns", "n::RngIntElt", "Set the line width used for printing (0 for no limit).", set_columns);
     it.def("GetColumns", "-> RngIntElt", "The line width used for printing.", get_columns);
     it.def("SetAutoColumns", "b::BoolElt", "Whether to follow the terminal width.", set_auto_columns);
+    it.def("GetAutoColumns", "-> BoolElt", "Whether the terminal width is followed.", get_auto_columns);
     it.def("SetQuitOnError", "b::BoolElt", "Whether to quit when an error occurs.", set_quit_on_error);
     it.def("GetVersion", "-> RngIntElt, RngIntElt, RngIntElt", "The version numbers of calyx.", get_version);
     it.def("GetScriptFilename", "-> MonStgElt", "The name of the file being run.", get_script_filename);
@@ -347,8 +397,18 @@ pub fn register(it: &mut Interp) {
     it.def("SetIndent", "n::RngIntElt", "Set the number of spaces per indentation level.", set_indent);
     it.def("GetIndent", "-> RngIntElt", "The number of spaces per indentation level.", get_indent);
     it.def("SetPrompt", "s::MonStgElt", "Set the interactive prompt.", set_prompt);
+    it.def("GetPrompt", "-> MonStgElt", "The interactive prompt.", get_prompt);
     it.def("SetPath", "s::MonStgElt", "Set the directories searched by load and Attach.", set_path);
     it.def("GetPath", "-> MonStgElt", "The directories searched by load and Attach.", get_path);
+    it.def("SetLibraryRoot", "s::MonStgElt", "Set the root directory containing libraries.", set_library_root);
+    it.def("GetLibraryRoot", "-> MonStgElt", "The root directory containing libraries.", get_library_root);
+    it.def("SetLibraries", "s::MonStgElt", "Set the library directories below the library root.", set_libraries);
+    it.def("GetLibraries", "-> MonStgElt", "The library directories below the library root.", get_libraries);
+    it.def("GetTempDir", "-> MonStgElt", "The directory used for temporary files.", get_temp_dir);
+    it.def("SetHistorySize", "n::RngIntElt", "Set the number of interactive history entries kept.", set_history_size);
+    it.def("GetHistorySize", "-> RngIntElt", "The number of interactive history entries kept.", get_history_size);
+    it.def("SetViMode", "b::BoolElt", "Use vi rather than Emacs line editing.", set_vi_mode);
+    it.def("GetViMode", "-> BoolElt", "Whether vi line editing is in use.", get_vi_mode);
     it.def("ShowIdentifiers", "", "List the assigned identifiers.", show_identifiers);
     it.def("ShowValues", "", "List the assigned identifiers with their values.", show_values);
     it.def("ShowMemoryUsage", "", "Show the memory used.", show_memory_usage);
@@ -374,7 +434,6 @@ pub fn register(it: &mut Interp) {
         "SetIgnorePrompt",
         "SetIgnoreSpaces",
         "SetLineEditor",
-        "SetViMode",
         "SetTraceback",
         "SetDebugOnError",
         "SetHelpUseExternalBrowser",
@@ -383,10 +442,10 @@ pub fn register(it: &mut Interp) {
     for n in bool_noops {
         it.def(n, "b::BoolElt", "Accepted for compatibility; has no effect.", no_op);
     }
-    for n in ["SetHistorySize", "SetMemoryLimit", "SetNthreads", "SetRows", "Alarm"] {
+    for n in ["SetMemoryLimit", "SetNthreads", "SetRows", "Alarm"] {
         it.def(n, "n::RngIntElt", "Accepted for compatibility; has no effect.", no_op);
     }
-    for n in ["SetLibraries", "SetLibraryRoot", "SetHelpExternalSystem"] {
+    for n in ["SetHelpExternalSystem"] {
         it.def(n, "s::MonStgElt", "Accepted for compatibility; has no effect.", no_op);
     }
 }
