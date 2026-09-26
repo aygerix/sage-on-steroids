@@ -2,6 +2,7 @@
 //! signatures) and the built-in libraries.
 
 pub mod abgroups;
+pub mod algass;
 pub mod aggregates;
 pub mod combinat;
 pub mod complex;
@@ -535,6 +536,7 @@ pub fn register_all(it: &mut Interp) {
     rationals::register(it);
     finite_fields::register(it);
     nearfields::register(it);
+    algass::register(it);
     upoly::register(it);
     mpoly::register(it);
     groebner::register(it);

@@ -254,6 +254,7 @@ fn is_simple(v: &Value) -> bool {
         Value::Func(_) => true,
         Value::Elt(e) => !elt_is_compound(e),
         Value::Small(..) => true,
+        Value::Alg(_) => true,
         _ => false,
     }
 }
@@ -736,6 +737,7 @@ impl Interp {
                 let m = m.clone();
                 crate::intrinsics::matrices::fmt_matrix(self, p, &m, indent)?;
             }
+            Value::Alg(x) => crate::intrinsics::algass::fmt_elt(self, p, &x.clone(), indent)?,
             Value::Sparse(m) => crate::intrinsics::sparse::fmt_matrix(self, p, m, indent)?,
             Value::Infinity(pos) => p.write(match (p.level == Level::Magma, *pos) {
                 (false, true) => "Infinity",
@@ -956,6 +958,7 @@ impl Interp {
                 p.empty_line();
             }
             StructKind::Matrices(_) => crate::intrinsics::matrices::fmt_parent(self, p, s, indent)?,
+            StructKind::AlgAss(_) => crate::intrinsics::algass::fmt_algebra(self, p, s, indent)?,
             StructKind::SparseMatrices(_) => crate::intrinsics::sparse::fmt_parent(self, p, s, indent)?,
             // Magma's package code prints nearfields (without the order at
             // the minimal level), and what it prints does not count toward

@@ -103,8 +103,10 @@ builtin_types! {
     // The chapters being written in parallel add their types each in its
     // own block below, so that their branches merge cleanly.
 
-    // Rational field (#38).
+    // Rational field (#38, #53).
     POW_MAP_AUT = "PowMapAut": [POW_MAP],
+    ALG_ASS = "AlgAss": [ALG],
+    ALG_ASS_ELT = "AlgAssElt": [ALG_ELT],
     // Dirichlet characters (#48).
     GRP_DRCH = "GrpDrch": [STR],
     GRP_DRCH_ELT = "GrpDrchElt": [ELT],
@@ -195,8 +197,9 @@ impl TypeRegistry {
             (t::FLD_COM, t::FLD_COM_ELT),
             (t::EXT_RE, t::EXT_RE_ELT),
             (t::GRP_AB, t::GRP_AB_ELT),
-            // Rational field (#38).
+            // Rational field (#38, #53).
             (t::GRP_DRCH, t::GRP_DRCH_ELT),
+            (t::ALG_ASS, t::ALG_ASS_ELT),
 
             // Finite fields and nearfields (#39, #43).
             (t::NFD, t::NFD_ELT),

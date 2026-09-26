@@ -74,6 +74,8 @@ pub enum Value {
     AbElt(Rc<AbElt>),
     /// An element of a nearfield (`NfdElt`).
     Nfd(Rc<crate::intrinsics::nearfields::NfdElt>),
+    /// An element of an associative algebra (`AlgAssElt`).
+    Alg(Rc<crate::intrinsics::algass::AlgAssElt>),
     /// A Dirichlet character (`GrpDrchElt`).
     Drch(Rc<crate::intrinsics::residue::dirichlet::DrchElt>),
     /// `Infinity()` (`true`) or `-Infinity()` (`false`).
@@ -520,6 +522,8 @@ pub enum StructKind {
     Nearfield(Rc<crate::intrinsics::nearfields::Nearfield>),
     /// The set of all automorphisms of a structure (`PowMapAut`).
     Automorphisms(Value),
+    /// An associative algebra (`intrinsics/algass.rs`).
+    AlgAss(Rc<crate::intrinsics::algass::AlgAss>),
     /// A group of Dirichlet characters (`intrinsics/residue/dirichlet.rs`).
     DrchGroup(Rc<crate::intrinsics::residue::dirichlet::DrchGroup>),
     /// A matrix algebra, matrix space or R-space (`intrinsics/matrices`).
@@ -776,6 +780,7 @@ impl Value {
                 StructKind::AbGroup(_) => t::GRP_AB,
                 StructKind::Nearfield(n) => n.type_id(),
                 StructKind::Automorphisms(_) => t::POW_MAP_AUT,
+                StructKind::AlgAss(_) => t::ALG_ASS,
                 StructKind::DrchGroup(_) => t::GRP_DRCH,
                 StructKind::Matrices(m) => m.type_id(),
                 StructKind::SparseMatrices(_) => t::MTRX_SPRS_STR,
@@ -791,6 +796,7 @@ impl Value {
             Value::Perm(_) => t::GRP_PERM_ELT,
             Value::AbElt(_) => t::GRP_AB_ELT,
             Value::Nfd(_) => t::NFD_ELT,
+            Value::Alg(_) => t::ALG_ASS_ELT,
             Value::Drch(_) => t::GRP_DRCH_ELT,
             Value::Infinity(_) => t::INFTY,
             Value::Mat(m) => m.type_id(),
@@ -904,6 +910,10 @@ impl Hash for Value {
                 state.write_u8(22);
                 crate::intrinsics::nearfields::as_field_value(x).hash(state);
             }
+            Value::Alg(x) => {
+                state.write_u8(32);
+                crate::intrinsics::algass::hash_key(x).hash(state);
+            }
             // Equal characters over different rings hash alike.
             Value::Drch(x) => {
                 state.write_u8(26);
@@ -992,6 +1002,7 @@ fn struct_hash<H: Hasher>(s: &Struct, state: &mut H) {
             state.write_u8(14);
             x.hash(state);
         }
+        StructKind::AlgAss(a) => (Rc::as_ptr(a) as usize).hash(state),
         StructKind::DrchGroup(g) => {
             state.write_u8(27);
             g.modulus.hash(state);
@@ -1044,6 +1055,7 @@ impl PartialEq for Value {
             (Perm(a), Perm(b)) => a.images == b.images,
             (AbElt(a), AbElt(b)) => Rc::ptr_eq(&a.group, &b.group) && a.coords == b.coords,
             (Nfd(a), Nfd(b)) => crate::intrinsics::nearfields::nfd_equal(a, b).unwrap_or(false),
+            (Alg(a), Alg(b)) => crate::intrinsics::algass::same(a, b),
             (Drch(a), Drch(b)) => crate::intrinsics::residue::dirichlet::equal(a, b),
             (Infinity(a), Infinity(b)) => a == b,
             (Mat(a), Mat(b)) => a.same_as(b),
@@ -1079,6 +1091,7 @@ pub fn struct_eq(a: &Rc<Struct>, b: &Rc<Struct>) -> bool {
         (AbGroup(x), AbGroup(y)) => Rc::ptr_eq(x, y),
         (Nearfield(x), Nearfield(y)) => x.same_as(y),
         (Automorphisms(x), Automorphisms(y)) => x == y,
+        (AlgAss(x), AlgAss(y)) => Rc::ptr_eq(x, y),
         (DrchGroup(x), DrchGroup(y)) => crate::intrinsics::residue::dirichlet::same_group(x, y),
         (Matrices(x), Matrices(y)) => x.same_as(y),
         (SparseMatrices(x), SparseMatrices(y)) => x.same_as(y),
