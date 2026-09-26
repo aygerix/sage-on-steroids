@@ -10,9 +10,11 @@ use calyx_flint::mat::Mat;
 use rustc_hash::{FxHashMap, FxHasher};
 
 use crate::error::{RResult, RuntimeError};
-use crate::interp::Interp;
+use crate::intrinsics::{arg_ge, one};
+use crate::interp::{CallArgs, Interp};
 use crate::print::{Level, Printer};
 use crate::rings::structure_key;
+use crate::types::t;
 use crate::value::*;
 
 /// All sparse matrices over one coefficient ring.
@@ -193,6 +195,169 @@ fn bad() -> RuntimeError {
     RuntimeError::runtime("Bad argument types")
 }
 
+fn dim(a: &CallArgs, i: usize, num: usize) -> RResult<usize> {
+    let n = a.int(i)?;
+    match n.to_u64() {
+        Some(v) if v < 1 << 32 => Ok(v as usize),
+        _ if n.sign() < 0 => Err(arg_ge(num, n, 0)),
+        _ => Err(RuntimeError::runtime(format!("Argument {num} ({n}) is too large"))),
+    }
+}
+
+fn ring_arg(a: &CallArgs, i: usize) -> RResult<Value> {
+    match &a.args[i] {
+        v @ Value::Struct(_) if matches!(v.type_id(), t::RNG_INT | t::FLD_RAT | t::FLD_RE | t::FLD_COM) => Ok(v.clone()),
+        v @ Value::Struct(_) => Ok(v.clone()),
+        _ => Err(bad()),
+    }
+}
+
+fn seq_ring(it: &mut Interp, q: &SeqEnum) -> RResult<Value> {
+    match q.elems.first() {
+        Some(Value::Tuple(t)) if t.elems.len() == 3 => it.parent_of(&t.elems[2]),
+        Some(x) => it.parent_of(x),
+        None => match &q.universe {
+            Some(u) if it.types.isa(u.type_id(), t::RNG) => Ok(u.clone()),
+            _ => Err(RuntimeError::runtime("Illegal null sequence")),
+        },
+    }
+}
+
+fn new_value(it: &mut Interp, ring: &Value, nrows: usize, ncols: usize) -> RResult<Value> {
+    Ok(sparse_value(parent(it, ring)?, nrows, ncols))
+}
+
+fn from_sequence(it: &mut Interp, ring: &Value, nrows: usize, ncols: usize, q: &SeqEnum) -> RResult<Value> {
+    let Value::Sparse(mut out) = new_value(it, ring, nrows, ncols)? else { unreachable!() };
+    match q.elems.first() {
+        Some(Value::Tuple(_)) => {
+            for (k, v) in q.elems.iter().enumerate() {
+                let Value::Tuple(t) = v else { return Err(bad()) };
+                let [Value::Int(i), Value::Int(j), x] = &t.elems[..] else { return Err(bad()) };
+                let at = |v: &Integer, hi: usize, component: usize| match v.to_u64() {
+                    Some(x) if (1..=hi as u64).contains(&x) => Ok(x as usize - 1),
+                    _ => Err(RuntimeError::runtime(format!("Component {component} of sequence entry {} ({v}) is not in range [1 .. {hi}]", k + 1))),
+                };
+                let (i, j) = (at(i, nrows, 1)?, at(j, ncols, 2)?);
+                if !Rc::make_mut(&mut out).set(it, i, j, x)? {
+                    return Err(RuntimeError::runtime(format!("Cannot coerce sequence element {} into the coefficient ring", k + 1)));
+                }
+            }
+        }
+        _ => {
+            let mut k = 0;
+            for i in 0..nrows {
+                let Some(Value::Int(weight)) = q.elems.get(k) else { return Err(RuntimeError::runtime("Invalid sparse row encoding")) };
+                let Some(weight) = weight.to_u64().map(|x| x as usize) else { return Err(RuntimeError::runtime("Invalid sparse row encoding")) };
+                k += 1;
+                for _ in 0..weight {
+                    let (Some(Value::Int(j)), Some(x)) = (q.elems.get(k), q.elems.get(k + 1)) else {
+                        return Err(RuntimeError::runtime("Invalid sparse row encoding"));
+                    };
+                    let Some(j) = j.to_u64().filter(|j| (1..=ncols as u64).contains(j)).map(|j| j as usize - 1) else {
+                        return Err(RuntimeError::runtime("Column index out of range in sparse row encoding"));
+                    };
+                    if !Rc::make_mut(&mut out).set(it, i, j, x)? {
+                        return Err(RuntimeError::runtime(format!("Cannot coerce sequence element {} into the coefficient ring", k + 2)));
+                    }
+                    k += 2;
+                }
+            }
+            if k != q.elems.len() {
+                return Err(RuntimeError::runtime("Invalid sparse row encoding"));
+            }
+        }
+    }
+    Ok(Value::Sparse(out))
+}
+
+fn sparse_rmnq(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let ring = ring_arg(a, 0)?;
+    let (m, n) = (dim(a, 1, 2)?, dim(a, 2, 3)?);
+    let q = a.seq(3)?.clone();
+    one(from_sequence(it, &ring, m, n, &q)?)
+}
+
+fn sparse_mnq(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let (m, n) = (dim(a, 0, 1)?, dim(a, 1, 2)?);
+    let q = a.seq(2)?.clone();
+    let ring = seq_ring(it, &q)?;
+    one(from_sequence(it, &ring, m, n, &q)?)
+}
+
+fn sparse_rmn(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let ring = ring_arg(a, 0)?;
+    let (m, n) = (dim(a, 1, 2)?, dim(a, 2, 3)?);
+    one(new_value(it, &ring, m, n)?)
+}
+
+fn sparse_mn(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let (m, n) = (dim(a, 0, 1)?, dim(a, 1, 2)?);
+    one(new_value(it, &Value::integers(), m, n)?)
+}
+
+fn sparse_r(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    one(new_value(it, &ring_arg(a, 0)?, 0, 0)?)
+}
+
+fn sparse_empty(it: &mut Interp, _: &mut CallArgs) -> RResult<Vals> {
+    one(new_value(it, &Value::integers(), 0, 0)?)
+}
+
+fn diagonal(it: &mut Interp, ring: &Value, n: usize, xs: &[Value]) -> RResult<Value> {
+    let Value::Sparse(mut a) = new_value(it, ring, n, n)? else { unreachable!() };
+    for (i, x) in xs.iter().enumerate() {
+        if !Rc::make_mut(&mut a).set(it, i, i, x)? {
+            return Err(RuntimeError::runtime(format!("Cannot coerce sequence element {} into the coefficient ring", i + 1)));
+        }
+    }
+    Ok(Value::Sparse(a))
+}
+
+fn identity_sparse(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let ring = ring_arg(a, 0)?;
+    let n = dim(a, 1, 2)?;
+    one(diagonal(it, &ring, n, &vec![Value::int(1); n])?)
+}
+
+fn scalar_sparse(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let k = a.args.len() - 2;
+    let x = a.args[k + 1].clone();
+    let ring = if k == 1 { ring_arg(a, 0)? } else { it.parent_of(&x)? };
+    let n = dim(a, k, k + 1)?;
+    one(diagonal(it, &ring, n, &vec![x; n])?)
+}
+
+fn diagonal_sparse(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let k = a.args.len() - 1;
+    let q = a.seq(k)?.clone();
+    let ring = if k == 0 { seq_ring(it, &q)? } else { ring_arg(a, 0)? };
+    let n = if k == 2 { dim(a, 1, 2)? } else { q.elems.len() };
+    if q.elems.len() != n {
+        return Err(RuntimeError::runtime(format!("Length of argument {} is not {n}", k + 1)));
+    }
+    one(diagonal(it, &ring, n, &q.elems)?)
+}
+
+fn sparse_monomial(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let Value::Perm(g) = &a.args[0] else { return Err(bad()) };
+    if g.degree() % 2 != 0 {
+        return Err(RuntimeError::runtime("Permutation degree must be even"));
+    }
+    let d = g.degree() / 2;
+    let Value::Sparse(mut out) = new_value(it, &Value::integers(), d, d)? else { unreachable!() };
+    for i in 0..d {
+        let image = g.images[i] as usize;
+        let x = Value::int(if image < d { 1 } else { -1 });
+        Rc::make_mut(&mut out).set(it, i, image % d, &x)?;
+    }
+    one(Value::Sparse(out))
+}
+
+fn sparse_structure(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    one(Value::Struct(parent(it, &ring_arg(a, 0)?)?))
+}
+
 fn index_at(it: &Interp, a: &SparseMatrix, ids: &[Value], k: usize, n: usize) -> RResult<usize> {
     match &ids[k] {
         Value::Int(v) => match v.to_u64() {
@@ -286,4 +451,19 @@ pub fn fmt_parent(it: &mut Interp, p: &mut Printer, st: &Struct, indent: usize) 
     r
 }
 
-pub fn register(_: &mut Interp) {}
+pub fn register(it: &mut Interp) {
+    it.def("SparseMatrix", "R::Rng, m::RngIntElt, n::RngIntElt, Q::SeqEnum -> MtrxSprs", "The m by n sparse matrix over R given by Q.", sparse_rmnq);
+    it.def("SparseMatrix", "m::RngIntElt, n::RngIntElt, Q::SeqEnum -> MtrxSprs", "The m by n sparse matrix given by Q.", sparse_mnq);
+    it.def("SparseMatrix", "R::Rng, m::RngIntElt, n::RngIntElt -> MtrxSprs", "The m by n zero sparse matrix over R.", sparse_rmn);
+    it.def("SparseMatrix", "m::RngIntElt, n::RngIntElt -> MtrxSprs", "The m by n zero sparse matrix over the integers.", sparse_mn);
+    it.def("SparseMatrix", "R::Rng -> MtrxSprs", "The empty sparse matrix over R.", sparse_r);
+    it.def("SparseMatrix", "-> MtrxSprs", "The empty sparse matrix over the integers.", sparse_empty);
+    it.def("IdentitySparseMatrix", "R::Rng, n::RngIntElt -> MtrxSprs", "The n by n identity sparse matrix over R.", identity_sparse);
+    it.def("ScalarSparseMatrix", "n::RngIntElt, s::RngElt -> MtrxSprs", "The n by n scalar sparse matrix s.", scalar_sparse);
+    it.def("ScalarSparseMatrix", "R::Rng, n::RngIntElt, s::RngElt -> MtrxSprs", "The n by n scalar sparse matrix s over R.", scalar_sparse);
+    it.def("DiagonalSparseMatrix", "R::Rng, n::RngIntElt, Q::SeqEnum -> MtrxSprs", "The diagonal sparse matrix over R with diagonal Q.", diagonal_sparse);
+    it.def("DiagonalSparseMatrix", "R::Rng, Q::SeqEnum -> MtrxSprs", "The diagonal sparse matrix over R with diagonal Q.", diagonal_sparse);
+    it.def("DiagonalSparseMatrix", "Q::SeqEnum -> MtrxSprs", "The diagonal sparse matrix with diagonal Q.", diagonal_sparse);
+    it.def("SparseMonomialMatrix", "g::GrpPermElt -> MtrxSprs", "The signed monomial sparse matrix of g.", sparse_monomial);
+    it.def("SparseMatrixStructure", "R::Rng -> MtrxSprsStr", "The structure of sparse matrices over R.", sparse_structure);
+}
