@@ -519,7 +519,8 @@ impl Interp {
     /// A structure containing both `a` and `b` (automatic coercion only).
     pub fn common_universe(&self, a: &Value, b: &Value) -> Option<Value> {
         if a == b {
-            return if crate::intrinsics::nearfields::distinct_nearfields(a, b) { None } else { Some(a.clone()) };
+            let distinct = crate::intrinsics::nearfields::distinct_nearfields(a, b) || crate::intrinsics::residue::dirichlet::distinct_groups(a, b);
+            return if distinct { None } else { Some(a.clone()) };
         }
         // An aggregate used as a universe behaves like its own universe.
         let agg_universe = |v: &Value| -> Option<Option<Value>> {
@@ -657,7 +658,7 @@ impl Interp {
             u = Some(match u {
                 None => p.clone(),
                 Some(cur) => {
-                    if cur == p && !crate::intrinsics::nearfields::distinct_nearfields(&cur, &p) {
+                    if cur == p && self.common_universe(&cur, &p).is_some() {
                         cur
                     } else {
                         match self.covering_universe(&cur, &p)? {

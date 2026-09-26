@@ -151,6 +151,15 @@ Runtime error in map application: Element is not in the domain of the map
          ^
 Runtime error in '@@': Element is not in the codomain of the map
 
+2/3
+2/3
+(2/3)
+
+>> V![2/3] @@ g;
+    ^
+Runtime error in '!': Illegal coercion
+LHS: ModTupFld
+RHS: FldRatElt
 
 >> VectorSpace(Q, GF(5));
               ^

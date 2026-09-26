@@ -220,17 +220,11 @@ impl NativeMap for OverItself {
     }
 
     fn preimage(&self, it: &mut Interp, m: &MapObj, y: &Value) -> RResult<Value> {
-        let not_in = || RuntimeError::runtime("Element is not in the codomain of the map").in_context("@@");
-        match (y, &m.codomain) {
-            (Value::Mat(_), Value::Struct(st)) if matches!(st.kind, StructKind::Matrices(_)) => match it.try_coerce(&m.codomain, y)? {
-                Ok(Value::Mat(v)) => Ok(super::matrices::entry_value(it, &v, 0, 0)),
-                _ => Err(not_in()),
-            },
-            (_, Value::Struct(st)) if matches!(st.kind, StructKind::AlgAss(_)) => match it.try_coerce(&m.codomain, y)? {
-                Ok(a) => it.coerce(&Value::rationals(), &a),
-                Err(_) => Err(not_in()),
-            },
-            _ => Err(not_in()),
+        // y is first coerced into the codomain, as a sequence [q] can be.
+        match it.try_coerce(&m.codomain, y)? {
+            Ok(Value::Mat(v)) => Ok(super::matrices::entry_value(it, &v, 0, 0)),
+            Ok(a) => it.coerce(&Value::rationals(), &a),
+            Err(_) => Err(RuntimeError::runtime("Element is not in the codomain of the map").in_context("@@")),
         }
     }
 
