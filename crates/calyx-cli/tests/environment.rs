@@ -54,7 +54,8 @@ fn calyx_environment_paths_and_specs() {
         .env("CALYX_SYSTEM_SPEC", dir.join("system/system.spec"))
         .env("CALYX_USER_SPEC", dir.join("user/user.spec"))
         .env("CALYX_TEMP_DIR", &dir);
-    let input = "startup_value; SystemValue(); UserValue();\nGetPath(); GetLibraryRoot(); GetLibraries(); GetTempDir();\nLoad(\"library_file.m\");\n";
+    // No line wrapping: temporary directories on macOS are long enough to wrap at 80 columns.
+    let input = "SetColumns(0); startup_value; SystemValue(); UserValue();\nGetPath(); GetLibraryRoot(); GetLibraries(); GetTempDir();\nLoad(\"library_file.m\");\n";
     let out = run(c, &["path_file.m"], input);
     let expected = format!("path-file\nstartup\nsystem\nuser\n{}\n{}\nlib\n{}\nlibrary-file\n", dir.join("path").display(), dir.join("root").display(), dir.display());
     assert_eq!(out, expected);
