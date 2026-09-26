@@ -1,0 +1,83 @@
+{
+  "schema": 1,
+  "recorded_at": "2026-09-26T22:06:56.356164+00:00",
+  "platform": "Linux-6.17.0-1022-azure-aarch64-with-glibc2.39",
+  "cpu_model": "Neoverse-N2",
+  "binary": "/home/runner/work/calyx-math/calyx-math/target/release/calyx",
+  "environment": {
+    "OPENBLAS_NUM_THREADS": "1"
+  },
+  "version": "calyx 0.1.0\nBuild target: aarch64-unknown-linux-gnu\nFLINT: 3.6.0\nFLINT CFLAGS: -g -O3\nBLAS: OpenBLAS\nCPU dispatch: NEON, PMULL\nCunningham tables: /home/runner/work/calyx-math/calyx-math/data/cunningham/cunningham-small.bin (bases 2 to 99)",
+  "benchmarks": [
+    {
+      "name": "integer-product",
+      "script_sha256": "b6c792e2093b96b374012edb5d43107730ebee06fe10084ce649556559da7421",
+      "repeat": 3,
+      "result": "integer-product 881995",
+      "runs": [
+        { "wall_seconds": 0.10953789200004849, "peak_rss_bytes": 47996928 },
+        { "wall_seconds": 0.06135951999999634, "peak_rss_bytes": 55889920 },
+        { "wall_seconds": 0.061295690999941144, "peak_rss_bytes": 56455168 }
+      ],
+      "best_wall_seconds": 0.061295690999941144,
+      "median_wall_seconds": 0.06135951999999634,
+      "peak_rss_bytes": 56455168
+    },
+    {
+      "name": "matrix-product",
+      "script_sha256": "d3d0cc61c407d889f7fa737cdc594ae80232d895399f81043d1f179429541213",
+      "repeat": 3,
+      "result": "matrix-product 2660 1535",
+      "runs": [
+        { "wall_seconds": 2.5053026110000474, "peak_rss_bytes": 624836608 },
+        { "wall_seconds": 2.5096377429999848, "peak_rss_bytes": 624799744 },
+        { "wall_seconds": 2.498767251000004, "peak_rss_bytes": 624836608 }
+      ],
+      "best_wall_seconds": 2.498767251000004,
+      "median_wall_seconds": 2.5053026110000474,
+      "peak_rss_bytes": 624836608
+    },
+    {
+      "name": "matrix-rank",
+      "script_sha256": "a951ccf7eb102e59242b2e3830131213dc24e4886967a47daa11d8439469e2a5",
+      "repeat": 3,
+      "result": "matrix-rank 3000",
+      "runs": [
+        { "wall_seconds": 1.6899205680000478, "peak_rss_bytes": 271343616 },
+        { "wall_seconds": 1.699648185000001, "peak_rss_bytes": 271253504 },
+        { "wall_seconds": 1.6682140040001059, "peak_rss_bytes": 271339520 }
+      ],
+      "best_wall_seconds": 1.6682140040001059,
+      "median_wall_seconds": 1.6899205680000478,
+      "peak_rss_bytes": 271343616
+    },
+    {
+      "name": "packed-polynomial-product",
+      "script_sha256": "4e68ad13aa4a7c3a7d2da697320d6aa7241374800953201020b963a8e738cf63",
+      "repeat": 3,
+      "result": "packed-polynomial-product 200000 52*a^9 + 99*a^8 + 88*a^7 + 156*a^6 + 68*a^5 + \n    113*a^4 + 193*a^3 + 176*a^2 + 98*a + 232",
+      "runs": [
+        { "wall_seconds": 0.5348109210000302, "peak_rss_bytes": 216653824 },
+        { "wall_seconds": 0.5284392660000776, "peak_rss_bytes": 216510464 },
+        { "wall_seconds": 0.5280368979999821, "peak_rss_bytes": 216702976 }
+      ],
+      "best_wall_seconds": 0.5280368979999821,
+      "median_wall_seconds": 0.5284392660000776,
+      "peak_rss_bytes": 216702976
+    },
+    {
+      "name": "groebner-f4",
+      "script_sha256": "671a3629076589fa8343ca728a5a6224d23eb9fa97556b94b43d55ed28c7719a",
+      "repeat": 3,
+      "result": "groebner-f4 372 93500",
+      "runs": [
+        { "wall_seconds": 1.6949268949999805, "peak_rss_bytes": 146321408 },
+        { "wall_seconds": 1.695085588999973, "peak_rss_bytes": 146399232 },
+        { "wall_seconds": 1.6956185959999175, "peak_rss_bytes": 139378688 }
+      ],
+      "best_wall_seconds": 1.6949268949999805,
+      "median_wall_seconds": 1.695085588999973,
+      "peak_rss_bytes": 146399232
+    }
+  ]
+}
