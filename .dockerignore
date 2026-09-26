@@ -1,3 +1,11 @@
-.git
-target
-AGENTS.md
+*
+!Cargo.toml
+!Cargo.lock
+!rust-toolchain.toml
+!LICENSE
+!crates/
+!crates/**
+!build/
+!build/**
+!data/
+!data/**
