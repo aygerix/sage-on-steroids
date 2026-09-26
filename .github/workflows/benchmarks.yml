@@ -3,9 +3,6 @@ name: Benchmark baselines
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - lane/build
 
 permissions:
   contents: read
