@@ -131,7 +131,7 @@ part.
 | Chapter | Status |
 | --- | --- |
 | Matrices | In progress ([#76](https://github.com/aygerix/calyx-math/issues/76)): matrices and vectors on FLINT's native matrix types over the entry ring, with matrix algebras, matrix spaces and R-spaces as parents; creation (text/270), elementary properties (text/271), access and modification of entries (text/272), printing with Magma's column alignment, elementary arithmetic (text/275), block matrices (text/273), changing rings (text/274), nullspaces and solutions of systems (text/276), predicates (text/277), determinants, ranks, minors, Pfaffians and the other properties of text/278 (`Rank` also over multivariate polynomial rings), characteristic and minimal polynomials, their factored forms, eigenvalues and eigenspaces (text/279), and part of the canonical forms (text/280: `EchelonForm`, `HermiteForm`, `Adjoint`). The rest of the canonical forms are next. |
-| Sparse matrices | Not started ([#77](https://github.com/aygerix/calyx-math/issues/77)). |
+| Sparse matrices | In progress ([#77](https://github.com/aygerix/calyx-math/issues/77)), pending validation against 2.29: creation, access, entries and blocks, joins, conversion to and from dense matrices, changing rings, predicates, arithmetic, and products with dense vectors and matrices (text/288–296). **Missing:** nullspaces, determinants, minimal and characteristic polynomials, and structured Gaussian elimination (text/297–300). |
 | Vector spaces | Not started ([#78](https://github.com/aygerix/calyx-math/issues/78)). |
 | Polar spaces | Not started ([#79](https://github.com/aygerix/calyx-math/issues/79)). The sections on isometry groups, classical groups and Lie algebras wait for Parts IX and XIII. |
 
