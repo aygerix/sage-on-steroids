@@ -110,6 +110,7 @@ Matrix(Integers(), 2, 2, [<1,3,1>]);
 Matrix([[1,2],[3]]);
 Matrix(2, 2, [1,2,3,4,5]);
 Matrix(Integers(), -1, 2, []);
+KMatrixSpace(Integers(), 2, 2);
 
 // Edge cases
 Matrix(Integers(), 2, 2, []);

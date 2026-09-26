@@ -583,9 +583,13 @@ impl Mat {
         sys::fmpq_mat_struct { entries: self.raw.entries.cast(), r: self.raw.r, c: self.raw.c, stride: self.raw.stride }
     }
 
-    /// Whether the ring of the entries is known to be a field.
+    /// Whether the ring of the entries is known to be a field (for integers
+    /// modulo a large n, decided the first time).
     pub fn over_field(&self) -> bool {
-        self.floating() || self.ctx.is_field() == Truth::True
+        match self.ctx.kind() {
+            CtxKind::FmpzMod(_) => crate::upoly::fmpz_mod_is_field(&self.ctx),
+            _ => self.floating() || self.ctx.is_field() == Truth::True,
+        }
     }
 
     /// Whether the entries are floating-point reals or complex numbers,
@@ -766,12 +770,27 @@ impl Mat {
 
     /// Row i minus c times row k (over integers modulo a word, by FLINT's
     /// own vector routines).
-    fn submul_row(&mut self, i: usize, k: usize, c: &Elem) -> GrResult<()> {
-        let n = self.ncols();
-        if n == 0 {
+    pub fn submul_row(&mut self, i: usize, k: usize, c: &Elem) -> GrResult<()> {
+        if self.ncols() == 0 {
             return Ok(());
         }
-        let (dst, src) = (self.ptr_mut(i, 0), self.ptr(k, 0));
+        let src = self.ptr(k, 0);
+        self.submul_row_ptr(i, src, c)
+    }
+
+    /// Row i minus c times row k of `b`, a matrix over the same ring with as
+    /// many columns.
+    pub fn submul_row_of(&mut self, i: usize, b: &Mat, k: usize, c: &Elem) -> GrResult<()> {
+        debug_assert!(Rc::ptr_eq(&self.ctx, &b.ctx) && b.ncols() == self.ncols());
+        if self.ncols() == 0 {
+            return Ok(());
+        }
+        self.submul_row_ptr(i, b.ptr(k, 0), c)
+    }
+
+    fn submul_row_ptr(&mut self, i: usize, src: *const c_void, c: &Elem) -> GrResult<()> {
+        let n = self.ncols();
+        let dst = self.ptr_mut(i, 0);
         if let Some(w) = c.to_word() {
             let md = self.nmod_view().mod_;
             if w != 0 {
@@ -783,7 +802,7 @@ impl Mat {
     }
 
     /// Row i times c.
-    fn scale_row(&mut self, i: usize, c: &Elem) -> GrResult<()> {
+    pub fn scale_row(&mut self, i: usize, c: &Elem) -> GrResult<()> {
         let n = self.ncols();
         if n == 0 {
             return Ok(());
@@ -874,6 +893,73 @@ impl Mat {
         let (h, u) = (Mat::zero(&self.ctx, m, self.ncols()), Mat::zero(&self.ctx, m, m));
         unsafe { sys::fmpz_mat_hnf_transform(&mut h.fmpz_view(), &mut u.fmpz_view(), &self.fmpz_view()) };
         (h, u)
+    }
+
+    /// The absolute value of the determinant of a square matrix over the
+    /// integers, and the divisor of it that FLINT finds first: the least
+    /// common denominator of the solution of A·x = b for some b, which
+    /// divides the largest elementary divisor and is most often the whole
+    /// determinant. Both are 0 when A is singular.
+    pub fn det_with_divisor(&self) -> (Integer, Integer) {
+        assert_eq!(self.nrows(), self.ncols(), "determinant of a matrix that is not square");
+        let (mut d, mut s) = (Integer::zero(), Integer::zero());
+        unsafe { sys::fmpz_mat_det_divisor(s.raw_mut_ptr(), &self.fmpz_view()) };
+        if !s.is_zero() {
+            unsafe { sys::fmpz_mat_det_modular_given_divisor(d.raw_mut_ptr(), &self.fmpz_view(), s.raw_ptr(), 1) };
+        }
+        (d.abs(), s)
+    }
+
+    /// X and a denominator den with A·X = den·B, for a nonsingular square A
+    /// over the integers (FLINT's p-adic lifting); None if A is singular.
+    /// The denominator need not be the least.
+    pub fn solve_den(&self, b: &Mat) -> Option<(Mat, Integer)> {
+        let x = Mat::zero(&self.ctx, self.ncols(), b.ncols());
+        let mut den = Integer::zero();
+        let ok = unsafe { sys::fmpz_mat_solve_dixon_den(&mut x.fmpz_view(), den.raw_mut_ptr(), &self.fmpz_view(), &b.fmpz_view()) };
+        (ok != 0).then_some((x, den))
+    }
+
+    /// The gcd of the entries of a matrix over the integers (0 if all are 0).
+    pub fn content(&self) -> Integer {
+        let mut c = Integer::zero();
+        unsafe { sys::fmpz_mat_content(c.raw_mut_ptr(), &self.fmpz_view()) };
+        c
+    }
+
+    /// A matrix over the integers divided by a nonzero c that divides each
+    /// entry.
+    pub fn divexact_scalar(&self, c: &Integer) -> Mat {
+        let m = Mat::zero(&self.ctx, self.nrows(), self.ncols());
+        unsafe { sys::fmpz_mat_scalar_divexact_fmpz(&mut m.fmpz_view(), &self.fmpz_view(), c.raw_ptr()) };
+        m
+    }
+
+    /// The Smith normal form of a matrix over the integers: diagonal, with
+    /// nonnegative entries each dividing the next.
+    pub fn snf(&self) -> Mat {
+        let s = Mat::zero(&self.ctx, self.nrows(), self.ncols());
+        unsafe { sys::fmpz_mat_snf(&mut s.fmpz_view(), &self.fmpz_view()) };
+        s
+    }
+
+    /// The Smith normal form S of a matrix over the integers with
+    /// unimodular U and V such that U·A·V = S.
+    pub fn snf_transform(&self) -> (Mat, Mat, Mat) {
+        let (m, n) = (self.nrows(), self.ncols());
+        let (s, u, v) = (Mat::zero(&self.ctx, m, n), Mat::zero(&self.ctx, m, m), Mat::zero(&self.ctx, n, n));
+        unsafe { sys::fmpz_mat_snf_transform(&mut s.fmpz_view(), &mut u.fmpz_view(), &mut v.fmpz_view(), &self.fmpz_view()) };
+        (s, u, v)
+    }
+
+    /// An upper Hessenberg matrix similar to a square matrix over a field,
+    /// by Gaussian elimination: below each subdiagonal entry, taking it as
+    /// the pivot if it is nonzero and otherwise the first nonzero entry
+    /// below it.
+    pub fn hessenberg(&self) -> GrResult<Mat> {
+        let mut h = Mat::zero(&self.ctx, self.nrows(), self.ncols());
+        check(unsafe { sys::gr_mat_hessenberg_gauss(&mut h.raw, &self.raw, self.ctx.ptr()) })?;
+        Ok(h)
     }
 
     /// The rows of a matrix over the integers reduced by LLL (δ = 0.99,
