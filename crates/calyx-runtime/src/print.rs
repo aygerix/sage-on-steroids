@@ -267,7 +267,7 @@ fn is_block(v: &Value) -> bool {
 /// A matrix (not a vector) or an R-space, which a print list starts on a
 /// line of its own.
 fn is_matrix(v: &Value) -> bool {
-    matches!(v, Value::Mat(m) if !m.is_vector()) || crate::intrinsics::matrices::is_rspace(v)
+    matches!(v, Value::Mat(m) if !m.is_vector()) || matches!(v, Value::Sparse(_)) || crate::intrinsics::matrices::is_rspace(v)
 }
 
 /// Ring elements that print as sums of terms (polynomials, and elements of
