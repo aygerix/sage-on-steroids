@@ -143,10 +143,11 @@ fn gcd(mut a: u64, mut b: u64) -> u64 {
     a
 }
 
-/// The partitions as Magma gives them, or Magma's error for an n that is
-/// too large when they would hold more than MOST_PARTS integers.
-fn partitions_value(n: &Integer, parts: &[u64], k: Option<u64>) -> RResult<Vals> {
-    let mut elems = Vec::new();
+/// The partitions as Magma gives them (`count` of them, if known), or
+/// Magma's error for an n that is too large when they would hold more than
+/// MOST_PARTS integers.
+fn partitions_value(n: &Integer, parts: &[u64], k: Option<u64>, count: usize) -> RResult<Vals> {
+    let mut elems = Vec::with_capacity(count);
     let small = n.to_u64().filter(|&m| m < 1 << 30).ok_or_else(|| too_large(n))?;
     let mut push = |p: &[u64]| elems.push(Value::int_seq(p.iter().map(|&x| Integer::from_u64(x))));
     // A partition has at least n/max(parts) parts.
@@ -160,10 +161,10 @@ fn too_large(n: &Integer) -> RuntimeError {
     RuntimeError::runtime(format!("Argument 1 ({n}) is too large"))
 }
 
-/// The integers that the partitions of n hold, their parts and one for
-/// each (for n up to 350, where it fits): the parts k number p(n - k) +
-/// p(n - 2k) + ....
-fn partitions_size(n: usize) -> u64 {
+/// The number of partitions of n, and the integers they hold, their parts
+/// and one for each (for n up to 350, where it fits): the parts k number
+/// p(n - k) + p(n - 2k) + ....
+fn partitions_size(n: usize) -> (u64, u64) {
     let mut p = vec![0u64; n + 1];
     p[0] = 1;
     for k in 1..=n {
@@ -171,7 +172,7 @@ fn partitions_size(n: usize) -> u64 {
             p[i] += p[i - k];
         }
     }
-    p[n] + (1..=n).map(|k| (1..=n / k).map(|j| p[n - j * k]).sum::<u64>()).sum::<u64>()
+    (p[n], p[n] + (1..=n).map(|k| (1..=n / k).map(|j| p[n - j * k]).sum::<u64>()).sum::<u64>())
 }
 
 fn partitions(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
@@ -180,9 +181,13 @@ fn partitions(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
         return Err(arg_not(1, "non-negative"));
     }
     // Refused at once when too many.
-    let m = n.to_u64().filter(|&m| m < 200 && partitions_size(m as usize) <= MOST_PARTS).ok_or_else(|| too_large(&n))?;
+    let m = n.to_u64().filter(|&m| m < 200).ok_or_else(|| too_large(&n))?;
+    let (count, size) = partitions_size(m as usize);
+    if size > MOST_PARTS {
+        return Err(too_large(&n));
+    }
     let parts: Vec<u64> = (1..=m).rev().collect();
-    partitions_value(&n, &parts, None)
+    partitions_value(&n, &parts, None, count as usize)
 }
 
 fn number_of_partitions(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
@@ -212,7 +217,7 @@ fn restricted_partitions(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
         parts.push(m.to_u64().filter(|&m| m > 0 && m < 1 << 30).ok_or_else(bad)?);
     }
     parts.sort_by(|a, b| b.cmp(a));
-    partitions_value(&n, &parts, k)
+    partitions_value(&n, &parts, k, 0)
 }
 
 fn stirling_first(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
@@ -348,8 +353,8 @@ mod tests {
         assert_eq!(partitions_of(1_000_000, &[1], None).iter().map(Vec::len).collect::<Vec<_>>(), [1_000_000]);
         assert_eq!(partitions_of(1_000_000, &[3, 2], Some(10)), Vec::<Vec<u64>>::new());
         // The sizes of the lists of partitions: Partitions(74) is the last to fit.
-        assert_eq!(partitions_size(60), 15959618);
-        assert!(partitions_size(74) <= MOST_PARTS && partitions_size(75) > MOST_PARTS);
+        assert_eq!(partitions_size(60), (966467, 15959618));
+        assert!(partitions_size(74).1 <= MOST_PARTS && partitions_size(75).1 > MOST_PARTS);
     }
 
     #[test]
