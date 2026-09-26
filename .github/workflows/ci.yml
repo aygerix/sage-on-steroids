@@ -1,4 +1,5 @@
-# Build, clippy and the test suite on every push and pull request.
+# Build, clippy and the test suite on every push and pull request, on Linux x86-64 and
+# macOS ARM64 (Apple silicon).
 # No `cargo fmt --check`: the code is formatted by hand.
 name: CI
 
@@ -67,3 +68,25 @@ jobs:
 
       - name: Test
         run: cargo test ${{ matrix.profile == 'release' && '--release' || '' }} --no-fail-fast
+
+  macos:
+    name: test (macOS ARM64, release)
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install FLINT
+        run: brew install flint pkgconf
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: macos-release
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Test
+        run: cargo test --release --no-fail-fast
