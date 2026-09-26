@@ -125,6 +125,12 @@ impl Interp {
                 return cand;
             }
         }
+        for dir in &self.libraries {
+            let cand = self.library_root.join(dir).join(p);
+            if cand.exists() {
+                return cand;
+            }
+        }
         p.to_path_buf()
     }
 
