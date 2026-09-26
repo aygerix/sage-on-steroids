@@ -15,7 +15,7 @@ Q := ChangeRing(A, Rationals());
 Q;
 Matrix(Q);
 SparseMatrix(GF(7), A);
-SparseMatrixStructure(Rationals()) ! A;
+SparseMatrixStructure(Integers()) ! A;
 
 Matrix(SparseMatrix(Matrix(Integers(), 0, 4, [])));
 Matrix(SparseMatrix(Matrix(Integers(), 3, 0, [])));

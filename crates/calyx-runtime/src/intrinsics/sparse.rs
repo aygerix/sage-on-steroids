@@ -14,7 +14,7 @@ use crate::error::{RResult, RuntimeError};
 use crate::intrinsics::{arg_ge, intv, none, one};
 use crate::interp::{CallArgs, Interp};
 use crate::print::{Level, Printer};
-use crate::rings::structure_key;
+use crate::rings::{RingKind, ring_of, structure_key};
 use crate::types::t;
 use crate::value::*;
 
@@ -292,13 +292,9 @@ pub fn parent(it: &mut Interp, ring: &Value) -> RResult<Rc<Struct>> {
 }
 
 /// `P ! A` for a sparse matrix structure P.
-pub fn coerce(it: &mut Interp, st: &Rc<Struct>, x: &Value) -> RResult<Result<Value, Option<String>>> {
+pub fn coerce(_it: &mut Interp, st: &Rc<Struct>, x: &Value) -> RResult<Result<Value, Option<String>>> {
     match x {
         Value::Sparse(a) if a.ring() == &parent_info(st).ring => Ok(Ok(x.clone())),
-        Value::Sparse(a) => match changed_ring(it, a, &parent_info(st).ring) {
-            Ok(v) => Ok(Ok(v)),
-            Err(_) => Ok(Err(None)),
-        },
         Value::Int(n) if n.is_zero() => Ok(Ok(sparse_value(st.clone(), 0, 0))),
         _ => Ok(Err(None)),
     }
@@ -714,7 +710,10 @@ fn is_scalar(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
     if (0..m.nrows).any(|i| m.columns(i).into_iter().any(|j| i != j)) {
         return one(Value::Bool(false));
     }
-    if m.nrows < 2 {
+    if m.nrows == 0 {
+        return one(Value::Bool(false));
+    }
+    if m.nrows == 1 {
         return one(Value::Bool(true));
     }
     let x = m.entry(it, 0, 0);
@@ -1265,24 +1264,58 @@ pub fn set_index(it: &mut Interp, cur: &mut Value, ids: &[Value], x: Value) -> R
 /// Print a sparse matrix at the default or Magma level.
 pub fn fmt_matrix(it: &mut Interp, p: &mut Printer, a: &SparseMatrix, indent: usize) -> RResult<()> {
     if p.level == Level::Magma {
+        if let Rows::Integers(rows) = &a.rows {
+            p.write(&format!("SparseMatrix({}, {}, \\[", a.nrows, a.ncols));
+            for (i, row) in rows.iter().enumerate() {
+                p.newline(indent + 4);
+                p.write(&row.len().to_string());
+                for (j, x) in row {
+                    p.write(&format!(", {},{}", j + 1, x));
+                }
+                if i + 1 < rows.len() {
+                    p.write(",");
+                }
+            }
+            p.newline(indent);
+            p.write("])");
+            return Ok(());
+        }
         p.write("SparseMatrix(");
         it.fmt(p, a.ring(), indent)?;
-        p.write(&format!(", {}, {}, ", a.nrows, a.ncols));
+        p.write(&format!(", {}, {}, [", a.nrows, a.ncols));
         let mut entries = Vec::with_capacity(a.nnz());
         let mut push = |i: usize, j: usize, x: Value| {
             entries.push(Value::tuple(vec![Value::int(i as i64 + 1), Value::int(j as i64 + 1), x]));
         };
         match &a.rows {
-            Rows::Integers(rows) => for (i, row) in rows.iter().enumerate() { for (j, x) in row { push(i, *j, Value::Int(x.clone())); } },
             Rows::Words(rows) => for (i, row) in rows.iter().enumerate() {
                 for (j, x) in row { push(i, *j, it.elem_to_value(a.ring(), Elem::from_word(&a.info().ctx, *x))); }
             },
             Rows::Generic(rows) => for (i, row) in rows.iter().enumerate() {
                 for (j, x) in row { push(i, *j, it.elem_to_value(a.ring(), x.clone())); }
             },
+            Rows::Integers(_) => unreachable!(),
         }
-        it.fmt(p, &Value::seq(None, entries), indent)?;
-        p.write(")");
+        if entries.is_empty() {
+            p.write("])");
+        } else {
+            p.newline(indent + 4);
+            for (i, entry) in entries.iter().enumerate() {
+                it.fmt(p, entry, indent + 4)?;
+                if i + 1 < entries.len() {
+                    p.write(", ");
+                }
+            }
+            p.write("])");
+        }
+        if let Some((_, ring)) = ring_of(a.ring())
+            && matches!(&ring.kind, RingKind::Finite(f) if f.degree > 1)
+            && ring.has_names()
+        {
+            p.write(&format!(" where {} := ", ring.gen_name(1)));
+            it.fmt(p, a.ring(), indent)?;
+            p.write(".1");
+        }
         return Ok(());
     }
     p.write(&format!("Sparse matrix with {} row{} and {} column{} over ", a.nrows, if a.nrows == 1 { "" } else { "s" }, a.ncols, if a.ncols == 1 { "" } else { "s" }));
@@ -1302,7 +1335,7 @@ pub fn fmt_parent(it: &mut Interp, p: &mut Printer, st: &Struct, indent: usize) 
         p.write(")");
         return Ok(());
     }
-    p.write("Sparse Matrix Structure over ");
+    p.write("Set of all sparse matrices over ");
     let saved = p.level;
     p.level = Level::Minimal;
     let r = it.fmt(p, &ring, indent);
