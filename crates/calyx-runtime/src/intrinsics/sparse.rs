@@ -1312,6 +1312,7 @@ pub fn fmt_matrix(it: &mut Interp, p: &mut Printer, a: &SparseMatrix, indent: us
             Rows::Integers(_) | Rows::Words(_) => unreachable!(),
         }
         if entries.is_empty() {
+            p.newline(indent);
             p.write("])");
         } else {
             p.newline(indent + 4);

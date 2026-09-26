@@ -27,6 +27,7 @@ DiagonalSparseMatrix(GF(23), [1, 2, -3]);
 DiagonalSparseMatrix([1/2, 2]);
 SparseMatrix(Integers(), 0, 4);
 SparseMatrix(GF(7), 0, 4): Magma;
+SparseMatrix(Rationals(), 0, 4): Magma;
 SparseMatrix(3, 0);
 SparseMatrix();
 SparseMatrixStructure(Integers());
