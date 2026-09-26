@@ -305,7 +305,7 @@ impl Interp {
                 Rc::make_mut(s).fact = false;
             }
         }
-        let matrix = matches!(cur, Value::Mat(_));
+        let matrix = matches!(cur, Value::Mat(_) | Value::Sparse(_));
         let r = self.set_path(&mut cur, &path, v);
         self.put_place(root, cur, f);
         // Magma reports errors of assignments into matrices at the index.
@@ -452,6 +452,16 @@ impl Interp {
                     }
                 }
                 crate::intrinsics::matrices::set_index(self, cur, &ids, v)
+            }
+            Value::Sparse(_) => {
+                let mut ids = vec![i.clone()];
+                for step in rest {
+                    match step {
+                        PathElem::Index(j) => ids.push(j.clone()),
+                        PathElem::Attr(_) => return Err(RuntimeError::statement(":=", "Bad argument types")),
+                    }
+                }
+                crate::intrinsics::sparse::set_index(self, cur, &ids, v)
             }
             Value::ISet(_) => Err(RuntimeError::runtime("Indexed sets cannot be modified by indexing").in_context("[]:=")),
             Value::Str(_) => Err(RuntimeError::runtime("Strings cannot be modified by indexing").in_context("[]:=")),
@@ -841,6 +851,9 @@ impl Interp {
         if let Value::Mat(m) = &base {
             return crate::intrinsics::matrices::index(self, m, ids);
         }
+        if let Value::Sparse(m) = &base {
+            return crate::intrinsics::sparse::index(self, m, ids);
+        }
         for i in ids {
             base = self.index_one(base, i)?;
         }
@@ -945,6 +958,7 @@ impl Interp {
                 }
             }
             Value::Mat(m) => crate::intrinsics::matrices::index(self, m, std::slice::from_ref(i)),
+            Value::Sparse(m) => crate::intrinsics::sparse::index(self, m, std::slice::from_ref(i)),
             Value::Rec(_) => Err(RuntimeError::runtime("Records are accessed with ` not []").in_context(ctx)),
             Value::Struct(st) if matches!(st.kind, StructKind::Cartesian(_) | StructKind::Coproduct(_)) => {
                 let (StructKind::Cartesian(parts) | StructKind::Coproduct(parts)) = &st.kind else { unreachable!() };
