@@ -1,0 +1,110 @@
+# Manual ARM64 benchmark artifacts. Results are never published automatically.
+name: Benchmark baselines
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_BUILD_JOBS: 4
+  CARGO_PROFILE_RELEASE_LTO: thin
+  CARGO_PROFILE_RELEASE_INCREMENTAL: false
+  FLINT_VERSION: 3.6.0
+  OPENBLAS_NUM_THREADS: 1
+
+jobs:
+  linux-arm64:
+    name: benchmark (Linux ARM64)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libgmp-dev libmpfr-dev libopenblas-dev time
+
+      - name: Cache FLINT
+        id: flint
+        uses: actions/cache@v4
+        with:
+          path: ~/flint
+          key: benchmark-flint-${{ env.FLINT_VERSION }}-linux-arm64-${{ hashFiles('build/flint/**') }}
+
+      - name: Build FLINT
+        if: steps.flint.outputs.cache-hit != 'true'
+        env:
+          FLINT_TARBALL_URL: https://github.com/flintlib/flint/releases/download/v${{ env.FLINT_VERSION }}/flint-${{ env.FLINT_VERSION }}.tar.gz
+        run: build/flint/linux-arm64.sh "$HOME/flint"
+
+      - name: Use FLINT
+        run: |
+          echo "PKG_CONFIG_PATH=$HOME/flint/lib/pkgconfig" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$HOME/flint/lib" >> "$GITHUB_ENV"
+
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: benchmark-linux-arm64
+
+      - name: Build and measure
+        run: |
+          cargo build --release -p calyx-cli
+          cpu=$(lscpu | sed -n 's/^Model name:[[:space:]]*//p')
+          build/benchmarks/run.py --binary target/release/calyx --cpu-model "$cpu" --output linux-arm64.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-linux-arm64
+          path: linux-arm64.json
+          if-no-files-found: error
+
+  apple-arm64:
+    name: benchmark (Apple ARM64)
+    runs-on: macos-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: brew install gmp mpfr pkgconf
+
+      - name: Cache FLINT
+        id: flint
+        uses: actions/cache@v4
+        with:
+          path: ~/flint
+          key: benchmark-flint-${{ env.FLINT_VERSION }}-apple-arm64-${{ hashFiles('build/flint/**') }}
+
+      - name: Build FLINT
+        if: steps.flint.outputs.cache-hit != 'true'
+        env:
+          FLINT_TARBALL_URL: https://github.com/flintlib/flint/releases/download/v${{ env.FLINT_VERSION }}/flint-${{ env.FLINT_VERSION }}.tar.gz
+        run: build/flint/apple-arm64.sh "$HOME/flint"
+
+      - name: Use FLINT
+        run: |
+          echo "PKG_CONFIG_PATH=$HOME/flint/lib/pkgconfig" >> "$GITHUB_ENV"
+          echo "DYLD_LIBRARY_PATH=$HOME/flint/lib" >> "$GITHUB_ENV"
+
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: benchmark-apple-arm64
+
+      - name: Build and measure
+        run: |
+          cargo build --release -p calyx-cli
+          build/benchmarks/run.py --binary target/release/calyx --output apple-arm64.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-apple-arm64
+          path: apple-arm64.json
+          if-no-files-found: error

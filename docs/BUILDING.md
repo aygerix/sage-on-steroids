@@ -18,7 +18,6 @@ build/flint/linux-x86-64-avx2.sh "$HOME/.local/flint" /path/to/flint-3.6.0
 | Target | Script | CFLAGS | FLINT options | BLAS |
 | --- | --- | --- | --- | --- |
 | Apple silicon | `apple-arm64.sh` | `-O3` | ARM fast FFT | Accelerate |
-| Linux x86-64 AVX-512 | `linux-x86-64-avx512.sh` | `-O3 -march=x86-64-v4` | AVX2 and AVX-512 | OpenBLAS |
 | Linux x86-64 AVX2 | `linux-x86-64-avx2.sh` | `-O3 -march=x86-64-v3` | AVX2 | OpenBLAS |
 | Linux ARM64 | `linux-arm64.sh` | `-O3` | ARM fast FFT | OpenBLAS |
 | General Linux x86-64 | `linux-x86-64.sh` | `-O3 -march=x86-64` | portable x86-64 | OpenBLAS |
@@ -77,8 +76,8 @@ calyx from starting.
 ## Release archives
 
 The release workflow runs only for a version tag or when started by hand. It
-prepares one archive for Apple ARM64, Linux ARM64, and the general, AVX2 and
-AVX-512 Linux x86-64 targets. It uploads those archives as workflow artifacts;
+prepares one archive for Apple ARM64, Linux ARM64, and the general and AVX2
+Linux x86-64 targets. It uploads those archives as workflow artifacts;
 it does not create a release or publish a container image.
 
 An archive contains `bin/calyx`, the project `LICENSE`, bundled non-system
@@ -90,7 +89,7 @@ bundled so the archive does not require build dependencies on the target
 system.
 
 Before publishing a release, download its workflow artifacts and attach the
-five archives by hand. Build the full Cunningham table separately and attach
+four archives by hand. Build the full Cunningham table separately and attach
 `cunningham.bin` as an optional release asset; CI deliberately does not build
 or upload the 124 MB file. Users can place it in an extracted archive's
 `share/calyx` directory or select its containing directory with `CALYX_DATA`.
