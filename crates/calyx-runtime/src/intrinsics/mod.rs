@@ -18,6 +18,7 @@ pub mod ints;
 pub mod io;
 pub mod maps;
 pub mod matrices;
+pub mod polar;
 pub mod sparse;
 pub mod mpoly;
 pub mod nearfields;
@@ -544,6 +545,7 @@ pub fn register_all(it: &mut Interp) {
     complex::register(it);
     // Part IV.
     matrices::register(it);
+    polar::register(it);
     sparse::register(it);
     io::register(it);
     env::register(it);
