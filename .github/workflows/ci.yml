@@ -7,9 +7,11 @@ on:
   push:
   pull_request:
 
+# A newer push cancels a lane's older run. On rust a run always finishes: the newest push waits
+# for it, so merges that land close together are still tested.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/rust' }}
 
 env:
   CARGO_TERM_COLOR: always
