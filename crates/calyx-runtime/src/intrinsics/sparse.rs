@@ -7,10 +7,11 @@ use std::rc::Rc;
 use calyx_flint::Integer;
 use calyx_flint::gr::{Ctx, CtxKind, Elem, Truth};
 use calyx_flint::mat::Mat;
+use calyx_syntax::ast::BinOp;
 use rustc_hash::{FxHashMap, FxHasher};
 
 use crate::error::{RResult, RuntimeError};
-use crate::intrinsics::{arg_ge, intv, one};
+use crate::intrinsics::{arg_ge, intv, none, one};
 use crate::interp::{CallArgs, Interp};
 use crate::print::{Level, Printer};
 use crate::rings::structure_key;
@@ -162,6 +163,60 @@ impl SparseMatrix {
         Ok(true)
     }
 
+    fn resize(&mut self, nrows: usize, ncols: usize) {
+        if nrows > self.nrows {
+            match &mut self.rows {
+                Rows::Integers(rows) => rows.resize_with(nrows, Vec::new),
+                Rows::Words(rows) => rows.resize_with(nrows, Vec::new),
+                Rows::Generic(rows) => rows.resize_with(nrows, Vec::new),
+            }
+            self.nrows = nrows;
+        }
+        self.ncols = self.ncols.max(ncols);
+    }
+
+    fn swap_rows(&mut self, i: usize, j: usize) {
+        match &mut self.rows {
+            Rows::Integers(rows) => rows.swap(i, j),
+            Rows::Words(rows) => rows.swap(i, j),
+            Rows::Generic(rows) => rows.swap(i, j),
+        }
+    }
+
+    fn reverse_rows(&mut self) {
+        match &mut self.rows {
+            Rows::Integers(rows) => rows.reverse(),
+            Rows::Words(rows) => rows.reverse(),
+            Rows::Generic(rows) => rows.reverse(),
+        }
+    }
+
+    fn map_columns(&mut self, mut f: impl FnMut(usize) -> Option<usize>) {
+        match &mut self.rows {
+            Rows::Integers(rows) => for row in rows { map_row(row, &mut f); },
+            Rows::Words(rows) => for row in rows { map_row(row, &mut f); },
+            Rows::Generic(rows) => for row in rows { map_row(row, &mut f); },
+        }
+    }
+
+    fn retain_rows(&mut self, keep: &[usize]) {
+        match &mut self.rows {
+            Rows::Integers(rows) => *rows = keep.iter().map(|&i| rows[i].clone()).collect(),
+            Rows::Words(rows) => *rows = keep.iter().map(|&i| rows[i].clone()).collect(),
+            Rows::Generic(rows) => *rows = keep.iter().map(|&i| rows[i].clone()).collect(),
+        }
+        self.nrows = keep.len();
+    }
+
+    fn clear_block(&mut self, i: usize, j: usize, nrows: usize, ncols: usize) {
+        let end = j + ncols;
+        match &mut self.rows {
+            Rows::Integers(rows) => for row in &mut rows[i..i + nrows] { row.retain(|e| e.0 < j || e.0 >= end); },
+            Rows::Words(rows) => for row in &mut rows[i..i + nrows] { row.retain(|e| e.0 < j || e.0 >= end); },
+            Rows::Generic(rows) => for row in &mut rows[i..i + nrows] { row.retain(|e| e.0 < j || e.0 >= end); },
+        }
+    }
+
     pub fn dense(&self) -> Mat {
         let mut m = Mat::zero(&self.info().ctx, self.nrows, self.ncols);
         match &self.rows {
@@ -184,6 +239,14 @@ fn set_sorted<T>(row: &mut Vec<(usize, T)>, j: usize, x: T, zero: impl Fn(&T) ->
         Err(_) if zero(&x) => {}
         Err(k) => row.insert(k, (j, x)),
     }
+}
+
+fn map_row<T>(row: &mut Vec<(usize, T)>, f: &mut impl FnMut(usize) -> Option<usize>) {
+    row.retain_mut(|e| match f(e.0) {
+        Some(j) => { e.0 = j; true }
+        None => false,
+    });
+    row.sort_unstable_by_key(|e| e.0);
 }
 
 pub fn parent_info(st: &Struct) -> &SparseParent {
@@ -480,6 +543,304 @@ fn column_weights(_: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
     one(Value::int_seq(column_weights_of(&m).into_iter().map(|n| Integer::from_u64(n as u64))))
 }
 
+fn set_entry_proc(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let (i, j) = (a.int(1)?.to_u64(), a.int(2)?.to_u64());
+    let (Some(i), Some(j)) = (i.filter(|&x| x >= 1), j.filter(|&x| x >= 1)) else {
+        return Err(RuntimeError::runtime("Row and column numbers must be positive"));
+    };
+    let x = a.args[3].clone();
+    let Value::Sparse(m) = &mut a.args[0] else { unreachable!() };
+    let m = Rc::make_mut(m);
+    m.resize(i as usize, j as usize);
+    if !m.set(it, i as usize - 1, j as usize - 1, &x)? {
+        return Err(RuntimeError::runtime("Entry cannot be coerced into the coefficient ring"));
+    }
+    none()
+}
+
+fn submatrix_of(it: &mut Interp, a: &SparseMatrix, rows: &[usize], cols: &[usize]) -> RResult<Value> {
+    let Value::Sparse(mut out) = new_value(it, a.ring(), rows.len(), cols.len())? else { unreachable!() };
+    for (i, &r) in rows.iter().enumerate() {
+        for (j, &c) in cols.iter().enumerate() {
+            let x = a.entry(it, r, c);
+            Rc::make_mut(&mut out).set(it, i, j, &x)?;
+        }
+    }
+    Ok(Value::Sparse(out))
+}
+
+fn int_in(a: &CallArgs, k: usize, lo: i64, hi: i64) -> RResult<usize> {
+    let x = a.int(k)?;
+    match x.to_i64() {
+        Some(v) if (lo..=hi).contains(&v) => Ok(v as usize),
+        _ => Err(RuntimeError::runtime(format!("Argument {} ({x}) should be in the range [{lo} .. {hi}]", k + 1))),
+    }
+}
+
+fn submatrix(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let m = sparse_arg(a, 0)?;
+    let i = int_in(a, 1, 1, m.nrows as i64 + 1)?;
+    let j = int_in(a, 2, 1, m.ncols as i64 + 1)?;
+    let r = int_in(a, 3, 0, m.nrows as i64 + 1 - i as i64)?;
+    let c = int_in(a, 4, 0, m.ncols as i64 + 1 - j as i64)?;
+    one(submatrix_of(it, &m, &(i - 1..i - 1 + r).collect::<Vec<_>>(), &(j - 1..j - 1 + c).collect::<Vec<_>>())?)
+}
+
+fn submatrix_range(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let m = sparse_arg(a, 0)?;
+    let i = int_in(a, 1, 1, m.nrows as i64 + 1)?;
+    let j = int_in(a, 2, 1, m.ncols as i64 + 1)?;
+    let r = int_in(a, 3, i as i64 - 1, m.nrows as i64)?;
+    let c = int_in(a, 4, j as i64 - 1, m.ncols as i64)?;
+    one(submatrix_of(it, &m, &(i - 1..r).collect::<Vec<_>>(), &(j - 1..c).collect::<Vec<_>>())?)
+}
+
+fn indices(a: &CallArgs, k: usize, n: usize, what: &str) -> RResult<Vec<usize>> {
+    a.seq(k)?.elems.iter().map(|x| match x {
+        Value::Int(i) => i.to_u64().filter(|&i| (1..=n as u64).contains(&i)).map(|i| i as usize - 1).ok_or_else(|| RuntimeError::runtime(format!("{what} index out of range"))),
+        _ => Err(bad()),
+    }).collect()
+}
+
+fn submatrix_seqs(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let m = sparse_arg(a, 0)?;
+    let rows = indices(a, 1, m.nrows, "Row")?;
+    let cols = indices(a, 2, m.ncols, "Column")?;
+    one(submatrix_of(it, &m, &rows, &cols)?)
+}
+
+fn insert_block_in(it: &mut Interp, a: &mut CallArgs) -> RResult<()> {
+    let target = sparse_arg(a, 0)?;
+    let block = sparse_arg(a, 1)?;
+    let (i, j) = (a.int(2)?.clone(), a.int(3)?.clone());
+    let fits = |x: &Integer, n: usize, k: usize| x.to_u64().is_some_and(|x| x >= 1 && x as usize + k <= n + 1);
+    if !fits(&i, target.nrows, block.nrows) || !fits(&j, target.ncols, block.ncols) {
+        return Err(RuntimeError::runtime(format!("Argument 2 ({} by {}) does not fit into argument 1 ({} by {}) at position [{i}, {j}]", block.nrows, block.ncols, target.nrows, target.ncols)));
+    }
+    if target.ring() != block.ring() {
+        return Err(RuntimeError::runtime("Arguments have incompatible coefficient rings"));
+    }
+    let (i, j) = (i.to_u64().unwrap() as usize - 1, j.to_u64().unwrap() as usize - 1);
+    let entries = block.entries(it);
+    let Value::Sparse(target) = &mut a.args[0] else { unreachable!() };
+    let target = Rc::make_mut(target);
+    target.clear_block(i, j, block.nrows, block.ncols);
+    for (r, c, x) in entries {
+        target.set(it, i + r, j + c, &x)?;
+    }
+    Ok(())
+}
+
+fn insert_block_proc(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    insert_block_in(it, a)?;
+    none()
+}
+
+fn insert_block_func(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    insert_block_in(it, a)?;
+    one(std::mem::take(&mut a.args[0]))
+}
+
+fn row_submatrix(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let m = sparse_arg(a, 0)?;
+    let (i, k) = if a.args.len() == 3 {
+        let i = int_in(a, 1, 1, m.nrows as i64 + 1)?;
+        (i, int_in(a, 2, 0, m.nrows as i64 + 1 - i as i64)?)
+    } else {
+        (1, int_in(a, 1, 0, m.nrows as i64)?)
+    };
+    one(submatrix_of(it, &m, &(i - 1..i - 1 + k).collect::<Vec<_>>(), &(0..m.ncols).collect::<Vec<_>>())?)
+}
+
+fn row_submatrix_range(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let m = sparse_arg(a, 0)?;
+    let i = int_in(a, 1, 1, m.nrows as i64 + 1)?;
+    let j = int_in(a, 2, i as i64 - 1, m.nrows as i64)?;
+    one(submatrix_of(it, &m, &(i - 1..j).collect::<Vec<_>>(), &(0..m.ncols).collect::<Vec<_>>())?)
+}
+
+fn column_submatrix(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let m = sparse_arg(a, 0)?;
+    let (i, k) = if a.args.len() == 3 {
+        let i = int_in(a, 1, 1, m.ncols as i64 + 1)?;
+        (i, int_in(a, 2, 0, m.ncols as i64 + 1 - i as i64)?)
+    } else {
+        (1, int_in(a, 1, 0, m.ncols as i64)?)
+    };
+    one(submatrix_of(it, &m, &(0..m.nrows).collect::<Vec<_>>(), &(i - 1..i - 1 + k).collect::<Vec<_>>())?)
+}
+
+fn column_submatrix_range(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let m = sparse_arg(a, 0)?;
+    let i = int_in(a, 1, 1, m.ncols as i64 + 1)?;
+    let j = int_in(a, 2, i as i64 - 1, m.ncols as i64)?;
+    one(submatrix_of(it, &m, &(0..m.nrows).collect::<Vec<_>>(), &(i - 1..j).collect::<Vec<_>>())?)
+}
+
+fn line_number(a: &CallArgs, k: usize, what: &str, n: usize) -> RResult<usize> {
+    let x = a.int(k)?;
+    x.to_u64().filter(|&x| (1..=n as u64).contains(&x)).map(|x| x as usize - 1)
+        .ok_or_else(|| RuntimeError::runtime(format!("Value for {what} number ({x}) should be in the range [1..{n}]")))
+}
+
+fn scalar_value(it: &mut Interp, m: &SparseMatrix, x: &Value) -> RResult<Value> {
+    crate::intrinsics::matrices::scalar(it, m.ring(), &m.info().ctx, x)?
+        .map(|x| it.elem_to_value(m.ring(), x))
+        .ok_or_else(|| bad())
+}
+
+fn mul_values(it: &mut Interp, a: Value, b: Value) -> RResult<Value> {
+    it.binop(BinOp::Mul, a, b).map_err(|e| e.in_context("*"))
+}
+
+fn add_values(it: &mut Interp, a: Value, b: Value) -> RResult<Value> {
+    it.binop(BinOp::Add, a, b).map_err(|e| e.in_context("+"))
+}
+
+fn def_both(it: &mut Interp, name: &str, args: &str, doc: &str, proc_: crate::intrinsics::NativeFn, func: crate::intrinsics::NativeFn) {
+    it.def(name, &format!("~A::MtrxSprs{args}"), doc, proc_);
+    it.def(name, &format!("A::MtrxSprs{args} -> MtrxSprs"), doc, func);
+}
+
+macro_rules! sparse_op {
+    ($proc:ident, $func:ident, $body:expr) => {
+        fn $proc(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+            let f: fn(&mut Interp, &mut CallArgs) -> RResult<()> = $body;
+            f(it, a)?;
+            none()
+        }
+        fn $func(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+            let f: fn(&mut Interp, &mut CallArgs) -> RResult<()> = $body;
+            f(it, a)?;
+            one(std::mem::take(&mut a.args[0]))
+        }
+    };
+}
+
+sparse_op!(swap_rows_proc, swap_rows_func, |_, a| {
+    let m = sparse_arg(a, 0)?;
+    let (i, j) = (line_number(a, 1, "row", m.nrows)?, line_number(a, 2, "row", m.nrows)?);
+    let Value::Sparse(m) = &mut a.args[0] else { unreachable!() };
+    Rc::make_mut(m).swap_rows(i, j);
+    Ok(())
+});
+
+sparse_op!(swap_cols_proc, swap_cols_func, |_, a| {
+    let m = sparse_arg(a, 0)?;
+    let (i, j) = (line_number(a, 1, "column", m.ncols)?, line_number(a, 2, "column", m.ncols)?);
+    let Value::Sparse(m) = &mut a.args[0] else { unreachable!() };
+    Rc::make_mut(m).map_columns(|c| Some(if c == i { j } else if c == j { i } else { c }));
+    Ok(())
+});
+
+sparse_op!(reverse_rows_proc, reverse_rows_func, |_, a| {
+    let Value::Sparse(m) = &mut a.args[0] else { unreachable!() };
+    Rc::make_mut(m).reverse_rows();
+    Ok(())
+});
+
+sparse_op!(reverse_cols_proc, reverse_cols_func, |_, a| {
+    let Value::Sparse(m) = &mut a.args[0] else { unreachable!() };
+    let n = m.ncols;
+    Rc::make_mut(m).map_columns(|c| Some(n - 1 - c));
+    Ok(())
+});
+
+sparse_op!(add_row_proc, add_row_func, |it, a| {
+    let m = sparse_arg(a, 0)?;
+    let c = scalar_value(it, &m, &a.args[1])?;
+    let (src, dst) = (line_number(a, 2, "row", m.nrows)?, line_number(a, 3, "row", m.nrows)?);
+    let entries: Vec<(usize, Value)> = m.columns(src).into_iter().map(|j| (j, m.entry(it, src, j))).collect();
+    let Value::Sparse(m) = &mut a.args[0] else { unreachable!() };
+    for (j, x) in entries {
+        let y = Rc::make_mut(m).entry(it, dst, j);
+        let cx = mul_values(it, c.clone(), x)?;
+        let z = add_values(it, y, cx)?;
+        Rc::make_mut(m).set(it, dst, j, &z)?;
+    }
+    Ok(())
+});
+
+sparse_op!(add_col_proc, add_col_func, |it, a| {
+    let m = sparse_arg(a, 0)?;
+    let c = scalar_value(it, &m, &a.args[1])?;
+    let (src, dst) = (line_number(a, 2, "column", m.ncols)?, line_number(a, 3, "column", m.ncols)?);
+    let entries: Vec<(usize, Value)> = (0..m.nrows).filter_map(|i| m.columns(i).contains(&src).then(|| (i, m.entry(it, i, src)))).collect();
+    let Value::Sparse(m) = &mut a.args[0] else { unreachable!() };
+    for (i, x) in entries {
+        let y = Rc::make_mut(m).entry(it, i, dst);
+        let cx = mul_values(it, c.clone(), x)?;
+        let z = add_values(it, y, cx)?;
+        Rc::make_mut(m).set(it, i, dst, &z)?;
+    }
+    Ok(())
+});
+
+sparse_op!(mul_row_proc, mul_row_func, |it, a| {
+    let m = sparse_arg(a, 0)?;
+    let c = scalar_value(it, &m, &a.args[1])?;
+    let i = line_number(a, 2, "row", m.nrows)?;
+    let entries: Vec<(usize, Value)> = m.columns(i).into_iter().map(|j| (j, m.entry(it, i, j))).collect();
+    let Value::Sparse(m) = &mut a.args[0] else { unreachable!() };
+    for (j, x) in entries {
+        let z = mul_values(it, c.clone(), x)?;
+        Rc::make_mut(m).set(it, i, j, &z)?;
+    }
+    Ok(())
+});
+
+sparse_op!(mul_col_proc, mul_col_func, |it, a| {
+    let m = sparse_arg(a, 0)?;
+    let c = scalar_value(it, &m, &a.args[1])?;
+    let j = line_number(a, 2, "column", m.ncols)?;
+    let entries: Vec<(usize, Value)> = (0..m.nrows).filter_map(|i| m.columns(i).contains(&j).then(|| (i, m.entry(it, i, j)))).collect();
+    let Value::Sparse(m) = &mut a.args[0] else { unreachable!() };
+    for (i, x) in entries {
+        let z = mul_values(it, c.clone(), x)?;
+        Rc::make_mut(m).set(it, i, j, &z)?;
+    }
+    Ok(())
+});
+
+sparse_op!(remove_row_proc, remove_row_func, |_, a| {
+    let m = sparse_arg(a, 0)?;
+    let i = line_number(a, 1, "row", m.nrows)?;
+    let keep: Vec<usize> = (0..m.nrows).filter(|&r| r != i).collect();
+    let Value::Sparse(m) = &mut a.args[0] else { unreachable!() };
+    Rc::make_mut(m).retain_rows(&keep);
+    Ok(())
+});
+
+sparse_op!(remove_col_proc, remove_col_func, |_, a| {
+    let m = sparse_arg(a, 0)?;
+    let j = line_number(a, 1, "column", m.ncols)?;
+    let Value::Sparse(m) = &mut a.args[0] else { unreachable!() };
+    let m = Rc::make_mut(m);
+    m.map_columns(|c| if c == j { None } else { Some(c - (c > j) as usize) });
+    m.ncols -= 1;
+    Ok(())
+});
+
+sparse_op!(remove_row_col_proc, remove_row_col_func, |_, a| {
+    let m = sparse_arg(a, 0)?;
+    let (i, j) = (line_number(a, 1, "row", m.nrows)?, line_number(a, 2, "column", m.ncols)?);
+    let keep: Vec<usize> = (0..m.nrows).filter(|&r| r != i).collect();
+    let Value::Sparse(m) = &mut a.args[0] else { unreachable!() };
+    let m = Rc::make_mut(m);
+    m.retain_rows(&keep);
+    m.map_columns(|c| if c == j { None } else { Some(c - (c > j) as usize) });
+    m.ncols -= 1;
+    Ok(())
+});
+
+sparse_op!(remove_zero_rows_proc, remove_zero_rows_func, |_, a| {
+    let m = sparse_arg(a, 0)?;
+    let keep: Vec<usize> = (0..m.nrows).filter(|&i| m.row_len(i) != 0).collect();
+    let Value::Sparse(m) = &mut a.args[0] else { unreachable!() };
+    Rc::make_mut(m).retain_rows(&keep);
+    Ok(())
+});
+
 fn index_at(it: &Interp, a: &SparseMatrix, ids: &[Value], k: usize, n: usize) -> RResult<usize> {
     match &ids[k] {
         Value::Int(v) => match v.to_u64() {
@@ -610,4 +971,36 @@ pub fn register(it: &mut Interp) {
     it.def("RowWeights", "A::MtrxSprs -> [RngIntElt]", "The row weights of A.", row_weights);
     it.def("ColumnWeight", "A::MtrxSprs, j::RngIntElt -> RngIntElt", "The number of nonzero entries in column j.", column_weight);
     it.def("ColumnWeights", "A::MtrxSprs -> [RngIntElt]", "The column weights of A.", column_weights);
+    it.def("SetEntry", "~A::MtrxSprs, i::RngIntElt, j::RngIntElt, x::RngElt", "Set entry (i, j), extending A if needed.", set_entry_proc);
+    let block = "A::MtrxSprs, i::RngIntElt, j::RngIntElt, p::RngIntElt, q::RngIntElt -> MtrxSprs";
+    for name in ["Submatrix", "ExtractBlock"] {
+        it.def(name, block, "The p by q sparse block of A at (i, j).", submatrix);
+    }
+    for name in ["SubmatrixRange", "ExtractBlockRange"] {
+        it.def(name, block, "The sparse block of A from (i, j) to (p, q).", submatrix_range);
+    }
+    it.def("Submatrix", "A::MtrxSprs, I::[RngIntElt], J::[RngIntElt] -> MtrxSprs", "The sparse submatrix with rows I and columns J.", submatrix_seqs);
+    it.def("InsertBlock", "~A::MtrxSprs, B::MtrxSprs, i::RngIntElt, j::RngIntElt", "Insert B into A at (i, j).", insert_block_proc);
+    it.def("InsertBlock", "A::MtrxSprs, B::MtrxSprs, i::RngIntElt, j::RngIntElt -> MtrxSprs", "A with B inserted at (i, j).", insert_block_func);
+    it.def("RowSubmatrix", "A::MtrxSprs, i::RngIntElt, k::RngIntElt -> MtrxSprs", "The k rows of A from row i.", row_submatrix);
+    it.def("RowSubmatrix", "A::MtrxSprs, i::RngIntElt -> MtrxSprs", "The first i rows of A.", row_submatrix);
+    it.def("RowSubmatrixRange", "A::MtrxSprs, i::RngIntElt, j::RngIntElt -> MtrxSprs", "Rows i through j of A.", row_submatrix_range);
+    it.def("ColumnSubmatrix", "A::MtrxSprs, i::RngIntElt, k::RngIntElt -> MtrxSprs", "The k columns of A from column i.", column_submatrix);
+    it.def("ColumnSubmatrix", "A::MtrxSprs, i::RngIntElt -> MtrxSprs", "The first i columns of A.", column_submatrix);
+    it.def("ColumnSubmatrixRange", "A::MtrxSprs, i::RngIntElt, j::RngIntElt -> MtrxSprs", "Columns i through j of A.", column_submatrix_range);
+    let ij = ", i::RngIntElt, j::RngIntElt";
+    def_both(it, "SwapRows", ij, "Swap rows i and j of A.", swap_rows_proc, swap_rows_func);
+    def_both(it, "SwapColumns", ij, "Swap columns i and j of A.", swap_cols_proc, swap_cols_func);
+    def_both(it, "ReverseRows", "", "Reverse the rows of A.", reverse_rows_proc, reverse_rows_func);
+    def_both(it, "ReverseColumns", "", "Reverse the columns of A.", reverse_cols_proc, reverse_cols_func);
+    let cij = ", c::RngElt, i::RngIntElt, j::RngIntElt";
+    def_both(it, "AddRow", cij, "Add c times row i to row j.", add_row_proc, add_row_func);
+    def_both(it, "AddColumn", cij, "Add c times column i to column j.", add_col_proc, add_col_func);
+    let ci = ", c::RngElt, i::RngIntElt";
+    def_both(it, "MultiplyRow", ci, "Multiply row i by c.", mul_row_proc, mul_row_func);
+    def_both(it, "MultiplyColumn", ci, "Multiply column i by c.", mul_col_proc, mul_col_func);
+    def_both(it, "RemoveRow", ", i::RngIntElt", "Remove row i.", remove_row_proc, remove_row_func);
+    def_both(it, "RemoveColumn", ", j::RngIntElt", "Remove column j.", remove_col_proc, remove_col_func);
+    def_both(it, "RemoveRowColumn", ij, "Remove row i and column j.", remove_row_col_proc, remove_row_col_func);
+    def_both(it, "RemoveZeroRows", "", "Remove all zero rows.", remove_zero_rows_proc, remove_zero_rows_func);
 }
