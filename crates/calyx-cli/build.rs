@@ -15,6 +15,7 @@ fn metadata(env_name: &str, pkg_name: &str) -> String {
 fn main() {
     println!("cargo::rerun-if-env-changed=CALYX_FLINT_CFLAGS");
     println!("cargo::rerun-if-env-changed=CALYX_FLINT_BLAS");
+    println!("cargo::rerun-if-env-changed=CALYX_FLINT_AVX2_CFLAGS");
     println!("cargo::rerun-if-env-changed=PKG_CONFIG");
     println!("cargo::rerun-if-env-changed=PKG_CONFIG_PATH");
     println!("cargo::rerun-if-env-changed=PKG_CONFIG_LIBDIR");
@@ -25,4 +26,7 @@ fn main() {
     println!("cargo::rustc-env=CALYX_BUILD_TARGET={}", env::var("TARGET").unwrap());
     println!("cargo::rustc-env=CALYX_FLINT_CFLAGS={}", metadata("CALYX_FLINT_CFLAGS", "calyx_cflags"));
     println!("cargo::rustc-env=CALYX_FLINT_BLAS={}", metadata("CALYX_FLINT_BLAS", "calyx_blas"));
+    if let Ok(flags) = env::var("CALYX_FLINT_AVX2_CFLAGS") {
+        println!("cargo::rustc-env=CALYX_FLINT_AVX2_CFLAGS={flags}");
+    }
 }

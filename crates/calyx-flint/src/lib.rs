@@ -44,16 +44,37 @@ pub use real::{Real, bits_for_digits, digits_for_bits, parse_decimal};
 pub use series::EulerSum;
 pub use special::bernoulli;
 
-use std::ffi::CStr;
+use std::ffi::{CStr, c_void};
 use std::os::raw::c_char;
+use std::path::PathBuf;
 
 unsafe extern "C" {
     static flint_version: c_char;
 }
 
+#[repr(C)]
+struct DlInfo {
+    filename: *const c_char,
+    base: *mut c_void,
+    symbol: *const c_char,
+    address: *mut c_void,
+}
+
+#[cfg_attr(target_os = "linux", link(name = "dl"))]
+unsafe extern "C" {
+    fn dladdr(address: *const c_void, info: *mut DlInfo) -> i32;
+}
+
 /// The version of the FLINT library linked at run time.
 pub fn version() -> String {
     unsafe { CStr::from_ptr(&raw const flint_version).to_string_lossy().into_owned() }
+}
+
+/// The shared FLINT library selected by the dynamic loader.
+pub fn library_path() -> Option<PathBuf> {
+    let mut info = DlInfo { filename: std::ptr::null(), base: std::ptr::null_mut(), symbol: std::ptr::null(), address: std::ptr::null_mut() };
+    let found = unsafe { dladdr((&raw const flint_version).cast(), &mut info) };
+    (found != 0 && !info.filename.is_null()).then(|| PathBuf::from(unsafe { CStr::from_ptr(info.filename) }.to_string_lossy().into_owned()))
 }
 
 /// Copy a FLINT-allocated C string into a Rust `String` and free it.
