@@ -23,11 +23,15 @@ pub(super) fn dense_call(it: &mut Interp, a: &CallArgs, nresults: usize) -> RRes
 }
 
 fn nullspace(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let x = sparse_arg(a, 0)?;
+    if structured_rank(&x)?.is_some_and(|r| r == x.nrows) {
+        return Ok(vals![subspace(it, x.ring(), x.nrows, Mat::zero(&x.info().ctx, 0, x.nrows))?]);
+    }
     dense_call(it, a, 1)
 }
 
 fn kernel(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
-    let mut out = dense_call(it, a, 1)?;
+    let mut out = nullspace(it, a)?;
     if a.nresults < 2 {
         return Ok(out);
     }
@@ -41,11 +45,29 @@ fn kernel(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
 }
 
 fn kernel_matrix(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let x = sparse_arg(a, 0)?;
+    if structured_rank(&x)?.is_some_and(|r| r == x.nrows) {
+        return Ok(vals![crate::intrinsics::matrices::mat_value(it, x.ring(), Mat::zero(&x.info().ctx, 0, x.nrows))?]);
+    }
     dense_call(it, a, 1)
 }
 
 fn nullspace_of_transpose(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let x = sparse_arg(a, 0)?;
+    if structured_rank(&x)?.is_some_and(|r| r == x.ncols) {
+        return Ok(vals![subspace(it, x.ring(), x.ncols, Mat::zero(&x.info().ctx, 0, x.ncols))?]);
+    }
     dense_call(it, a, 1)
+}
+
+fn structured_rank(x: &super::SparseMatrix) -> RResult<Option<usize>> {
+    if let Some(r) = super::structured::word_reduce(x) {
+        return Ok(Some(r.pivots + r.remainder.rank().map_err(|e| crate::rings::gr_error(e, "Arithmetic failed"))?));
+    }
+    if let Some(r) = super::structured::integer_reduce(x) {
+        return Ok(Some(r.pivots + r.remainder.rank().map_err(|e| crate::rings::gr_error(e, "Arithmetic failed"))?));
+    }
+    Ok(None)
 }
 
 fn subspace(it: &mut Interp, ring: &Value, degree: usize, basis: Mat) -> RResult<Value> {
@@ -83,6 +105,9 @@ fn rowspace(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
 
 fn rank(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
     let x = sparse_arg(a, 0)?;
+    if let Some(rank) = structured_rank(&x)? {
+        return crate::intrinsics::intv(Integer::from_u64(rank as u64));
+    }
     let dense = dense_value(it, &x)?;
     let Value::Mat(m) = dense else { unreachable!() };
     crate::intrinsics::intv(Integer::from_u64(crate::intrinsics::matrices::rank_of(&m)? as u64))

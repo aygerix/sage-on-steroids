@@ -3,6 +3,7 @@
 mod linalg;
 mod determinant;
 mod charpoly;
+mod structured;
 
 use std::cell::RefCell;
 use std::hash::{Hash, Hasher};

@@ -1,6 +1,7 @@
 //! Determinants of sparse matrices (text/298).
 
 use super::sparse_arg;
+use calyx_flint::gr::Elem;
 use crate::error::{RResult, RuntimeError};
 use crate::intrinsics::one;
 use crate::interp::{CallArgs, Interp};
@@ -13,6 +14,27 @@ fn determinant(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
     let x = sparse_arg(a, 0)?;
     if x.nrows != x.ncols {
         return Err(RuntimeError::runtime("Argument 1 is not square"));
+    }
+    if let Some(r) = super::structured::integer_reduce(&x) {
+        let mut d = if r.remainder.nrows() != r.remainder.ncols() {
+            calyx_flint::Integer::zero()
+        } else {
+            let tail = r.remainder.det().map_err(|e| crate::rings::gr_error(e, "Arithmetic failed"))?.to_integer().map_err(|e| crate::rings::gr_error(e, "Arithmetic failed"))?;
+            &r.factor * &tail
+        };
+        if r.negative { d.neg_assign(); }
+        return one(Value::Int(d));
+    }
+    if let Some(r) = super::structured::word_reduce(&x) {
+        let d = if r.remainder.nrows() != r.remainder.ncols() {
+            Elem::zero(&x.info().ctx)
+        } else {
+            let tail = r.remainder.det().map_err(|e| crate::rings::gr_error(e, "Arithmetic failed"))?;
+            let mut d = Elem::from_word(&x.info().ctx, r.factor).mul(&tail).map_err(|e| crate::rings::gr_error(e, "Arithmetic failed"))?;
+            if r.negative { d = d.neg().map_err(|e| crate::rings::gr_error(e, "Arithmetic failed"))?; }
+            d
+        };
+        return one(it.elem_to_value(x.ring(), d));
     }
     let d = x.dense().det().map_err(|e| crate::rings::gr_error(e, "Arithmetic failed"))?;
     one(it.elem_to_value(x.ring(), d))
