@@ -1,5 +1,6 @@
 //! The `calyx` command-line interface.
 
+mod build_info;
 mod editor;
 mod style;
 
@@ -31,6 +32,8 @@ struct Options {
     startup: Option<String>,
     no_startup: bool,
     color: bool,
+    version: bool,
+    verbose: bool,
 }
 
 fn usage() -> String {
@@ -46,7 +49,8 @@ Options:
   -n            Do not run the startup file
   -s file       Run this startup file
   -S seed       Initial seed for the random number generator
-  -V            Print the version and exit
+  -V, --version Print the version and exit
+  --verbose     With --version, print build and acceleration details
   --no-color    Do not use colours in the terminal (also set by NO_COLOR)
 
 Files are run in order. Then, if standard input is a terminal, an
@@ -56,7 +60,10 @@ input. name:=value assigns the string value to the identifier name."
 }
 
 fn parse_args() -> Result<Options, String> {
-    let mut o = Options { banner: true, seed: None, files: Vec::new(), eval: Vec::new(), assignments: Vec::new(), startup: None, no_startup: false, color: true };
+    let mut o = Options {
+        banner: true, seed: None, files: Vec::new(), eval: Vec::new(), assignments: Vec::new(), startup: None, no_startup: false, color: true,
+        version: false, verbose: false,
+    };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -67,10 +74,8 @@ fn parse_args() -> Result<Options, String> {
                 println!("{}", usage());
                 std::process::exit(0);
             }
-            "-V" | "--version" => {
-                println!("calyx {VERSION}");
-                std::process::exit(0);
-            }
+            "-V" | "--version" => o.version = true,
+            "--verbose" => o.verbose = true,
             "-e" => o.eval.push(args.next().ok_or("-e needs a statement")?),
             "-s" => o.startup = Some(args.next().ok_or("-s needs a file name")?),
             "-S" => {
@@ -87,6 +92,9 @@ fn parse_args() -> Result<Options, String> {
                 }
             }
         }
+    }
+    if o.verbose && !o.version {
+        return Err("--verbose requires --version".into());
     }
     Ok(o)
 }
@@ -108,6 +116,14 @@ fn main() {
             std::process::exit(2);
         }
     };
+    if opts.version {
+        if opts.verbose {
+            println!("{}", build_info::verbose(VERSION));
+        } else {
+            println!("calyx {VERSION}");
+        }
+        return;
+    }
     // Run on a thread with a large stack so deep recursion in user code works.
     let child = std::thread::Builder::new().stack_size(1 << 30).spawn(move || run(opts)).expect("failed to start interpreter thread");
     let code = child.join().unwrap_or(1);

@@ -9,11 +9,12 @@ flint_usage() {
 }
 
 build_flint() {
-    [ "$#" -ge 3 ] || flint_usage
+    [ "$#" -ge 4 ] || flint_usage
     prefix=$1
     source=$2
     flint_cflags=$3
-    shift 3
+    flint_blas=$4
+    shift 4
 
     [ -n "$prefix" ] || flint_usage
     case "$prefix" in
@@ -52,4 +53,8 @@ build_flint() {
 
     make -j"$flint_jobs"
     make DESTDIR="${DESTDIR:-}" install
+
+    flint_pc=${DESTDIR:-}$prefix/lib/pkgconfig/flint.pc
+    [ -f "$flint_pc" ] || { echo "FLINT pkg-config file not found: $flint_pc" >&2; exit 1; }
+    printf '\ncalyx_cflags=%s\ncalyx_blas=%s\n' "$effective_cflags" "$flint_blas" >> "$flint_pc"
 }

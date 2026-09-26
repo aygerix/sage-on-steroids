@@ -7,4 +7,4 @@ set -eu
 script_dir=$(CDPATH= cd "$(dirname "$0")" && pwd)
 . "$script_dir/common.sh"
 
-build_flint "$1" "${2:-}" "-O3 -march=x86-64-v4" --enable-avx2 --enable-avx512 --with-blas
+build_flint "$1" "${2:-}" "-O3 -march=x86-64-v4" "OpenBLAS" --enable-avx2 --enable-avx512 --with-blas

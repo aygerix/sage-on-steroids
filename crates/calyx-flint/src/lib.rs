@@ -46,6 +46,15 @@ pub use special::bernoulli;
 use std::ffi::CStr;
 use std::os::raw::c_char;
 
+unsafe extern "C" {
+    static flint_version: c_char;
+}
+
+/// The version of the FLINT library linked at run time.
+pub fn version() -> String {
+    unsafe { CStr::from_ptr(&raw const flint_version).to_string_lossy().into_owned() }
+}
+
 /// Copy a FLINT-allocated C string into a Rust `String` and free it.
 ///
 /// # Safety
