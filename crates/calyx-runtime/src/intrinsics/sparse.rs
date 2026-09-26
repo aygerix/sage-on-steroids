@@ -2,6 +2,7 @@
 
 mod linalg;
 mod determinant;
+mod charpoly;
 
 use std::cell::RefCell;
 use std::hash::{Hash, Hasher};
@@ -1455,4 +1456,5 @@ pub fn register(it: &mut Interp) {
     it.def("MultiplyByTranspose", "V::Mtrx, A::MtrxSprs -> Mtrx", "V times the transpose of A.", multiply_by_transpose);
     linalg::register(it);
     determinant::register(it);
+    charpoly::register(it);
 }
