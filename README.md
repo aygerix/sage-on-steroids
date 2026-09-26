@@ -2,7 +2,7 @@
 
 A free, open-source computer algebra system that runs programs written in
 the **Magma language**. calyx is a command-line application written in Rust,
-with [FLINT](https://flintlib.org/) as its arithmetic engine.
+with FLINT as its arithmetic engine.
 
 calyx is an independent, clean-room implementation: it aims to run existing
 Magma scripts unchanged (same syntax, intrinsic names and printed output),
