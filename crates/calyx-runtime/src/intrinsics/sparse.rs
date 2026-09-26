@@ -1280,6 +1280,24 @@ pub fn fmt_matrix(it: &mut Interp, p: &mut Printer, a: &SparseMatrix, indent: us
             p.write("])");
             return Ok(());
         }
+        if let Rows::Words(rows) = &a.rows {
+            p.write("SparseMatrix(");
+            it.fmt(p, a.ring(), indent)?;
+            p.write(&format!(", {}, {}, \\[", a.nrows, a.ncols));
+            for (i, row) in rows.iter().enumerate() {
+                p.newline(indent + 4);
+                p.write(&row.len().to_string());
+                for (j, x) in row {
+                    p.write(&format!(", {},{}", j + 1, x));
+                }
+                if i + 1 < rows.len() {
+                    p.write(",");
+                }
+            }
+            p.newline(indent);
+            p.write("])");
+            return Ok(());
+        }
         p.write("SparseMatrix(");
         it.fmt(p, a.ring(), indent)?;
         p.write(&format!(", {}, {}, [", a.nrows, a.ncols));
@@ -1288,13 +1306,10 @@ pub fn fmt_matrix(it: &mut Interp, p: &mut Printer, a: &SparseMatrix, indent: us
             entries.push(Value::tuple(vec![Value::int(i as i64 + 1), Value::int(j as i64 + 1), x]));
         };
         match &a.rows {
-            Rows::Words(rows) => for (i, row) in rows.iter().enumerate() {
-                for (j, x) in row { push(i, *j, it.elem_to_value(a.ring(), Elem::from_word(&a.info().ctx, *x))); }
-            },
             Rows::Generic(rows) => for (i, row) in rows.iter().enumerate() {
                 for (j, x) in row { push(i, *j, it.elem_to_value(a.ring(), x.clone())); }
             },
-            Rows::Integers(_) => unreachable!(),
+            Rows::Integers(_) | Rows::Words(_) => unreachable!(),
         }
         if entries.is_empty() {
             p.write("])");

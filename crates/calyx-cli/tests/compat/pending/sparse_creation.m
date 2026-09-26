@@ -6,6 +6,7 @@ Matrix(A);
 A := SparseMatrix(GF(23), 2, 3, [<1,2,3>, <2,3,-1>]);
 A;
 Matrix(A);
+A: Magma;
 
 K<w> := GF(2^4);
 A := SparseMatrix(K, 2, 3, [<1,2,3>, <2,3,w>]);
@@ -25,6 +26,7 @@ DiagonalSparseMatrix(Integers(), 3, [1, 0, 3]);
 DiagonalSparseMatrix(GF(23), [1, 2, -3]);
 DiagonalSparseMatrix([1/2, 2]);
 SparseMatrix(Integers(), 0, 4);
+SparseMatrix(GF(7), 0, 4): Magma;
 SparseMatrix(3, 0);
 SparseMatrix();
 SparseMatrixStructure(Integers());
