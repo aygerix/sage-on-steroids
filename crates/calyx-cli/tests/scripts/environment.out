@@ -37,8 +37,12 @@ Abs(<FldRatElt> x) -> FldRatElt
 AbsoluteValue(<FldRatElt> x) -> FldRatElt
 AddColumn(~<Mtrx> A, <RngElt> c, <RngIntElt> i, <RngIntElt> j)
 AddColumn(<Mtrx> A, <RngElt> c, <RngIntElt> i, <RngIntElt> j) -> Mtrx
+AddColumn(~<MtrxSprs> A, <RngElt> c, <RngIntElt> i, <RngIntElt> j)
+AddColumn(<MtrxSprs> A, <RngElt> c, <RngIntElt> i, <RngIntElt> j) -> MtrxSprs
 AddRow(~<Mtrx> A, <RngElt> c, <RngIntElt> i, <RngIntElt> j)
 AddRow(<Mtrx> A, <RngElt> c, <RngIntElt> i, <RngIntElt> j) -> Mtrx
+AddRow(~<MtrxSprs> A, <RngElt> c, <RngIntElt> i, <RngIntElt> j)
+AddRow(<MtrxSprs> A, <RngElt> c, <RngIntElt> i, <RngIntElt> j) -> MtrxSprs
 AddScaledMatrix(<Mtrx> A, <RngElt> s, <Mtrx> B) -> Mtrx
 AddScaledMatrix(~<Mtrx> A, <RngElt> s, <Mtrx> B)
 Arccos(<FldRatElt> x) -> FldReElt
@@ -184,8 +188,12 @@ MinimalPolynomial(<FldRatElt> q) -> RngUPolElt
 Modulus(<FldRatElt> x) -> FldReElt
 MultiplyColumn(~<Mtrx> A, <RngElt> c, <RngIntElt> i)
 MultiplyColumn(<Mtrx> A, <RngElt> c, <RngIntElt> i) -> Mtrx
+MultiplyColumn(~<MtrxSprs> A, <RngElt> c, <RngIntElt> i)
+MultiplyColumn(<MtrxSprs> A, <RngElt> c, <RngIntElt> i) -> MtrxSprs
 MultiplyRow(~<Mtrx> A, <RngElt> c, <RngIntElt> i)
 MultiplyRow(<Mtrx> A, <RngElt> c, <RngIntElt> i) -> Mtrx
+MultiplyRow(~<MtrxSprs> A, <RngElt> c, <RngIntElt> i)
+MultiplyRow(<MtrxSprs> A, <RngElt> c, <RngIntElt> i) -> MtrxSprs
 Norm(<FldRatElt> q) -> FldRatElt
 Numerator(<FldRatElt> x) -> RngIntElt
 OrderOfRootOfUnity(<RngElt> r, <RngIntElt> n) -> RngIntElt
@@ -207,8 +215,11 @@ Root(<FldRatElt> x, <RngIntElt> n) -> FldReElt
 Round(<FldRatElt> x) -> RngIntElt
 ScalarMatrix(<RngIntElt> n, <RngElt> s) -> Mtrx
 ScalarMatrix(<Rng> R, <RngIntElt> n, <RngElt> s) -> Mtrx
+ScalarSparseMatrix(<RngIntElt> n, <RngElt> s) -> MtrxSprs
+ScalarSparseMatrix(<Rng> R, <RngIntElt> n, <RngElt> s) -> MtrxSprs
 Sec(<FldRatElt> x) -> FldReElt
 Sech(<FldRatElt> x) -> FldReElt
+SetEntry(~<MtrxSprs> A, <RngIntElt> i, <RngIntElt> j, <RngElt> x)
 Sign(<FldRatElt> x) -> RngIntElt
 Sin(<FldRatElt> x) -> FldReElt
 Sincos(<FldRatElt> x) -> FldReElt, FldReElt
