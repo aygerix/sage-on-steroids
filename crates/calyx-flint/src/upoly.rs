@@ -858,6 +858,12 @@ pub fn divexact_z(f: &Elem, c: &Integer) -> Elem {
     r
 }
 
+/// The n with `f` the n-th cyclotomic polynomial, for a polynomial over the
+/// integers; 0 if it is none.
+pub fn cyclotomic_index(f: &Elem) -> u64 {
+    unsafe { sys::fmpz_poly_is_cyclotomic(fz(f)) as u64 }
+}
+
 // ----- factorization ----------------------------------------------------------------
 
 /// A factorization `unit * prod f_i^e_i`: over the integers the unit is the
