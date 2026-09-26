@@ -1,0 +1,34 @@
+// Localhost-only socket and asynchronous I/O coverage. Every wait is bounded.
+server := Socket(: LocalHost := "127.0.0.1", LocalPort := 0);
+IsServerSocket(server); IOType(server); Type(server);
+loc, _ := SocketInformation(server);
+loc[1]; loc[2] gt 0;
+client := Socket("127.0.0.1", loc[2]);
+ready := WaitForIO([server] : TimeLimit := 1000);
+#ready;
+peer := WaitForConnection(server);
+IsServerSocket(peer); IOType(peer);
+cloc, cremote := SocketInformation(client);
+cremote[2] eq loc[2];
+Write(client, "hello");
+#WaitForIO([peer] : TimeLimit := 1000);
+Read(peer, 5);
+WriteBytes(client, [0, 255, 65]);
+ReadBytes(peer, 3);
+Write(client, "max");
+Read(peer : Max := 5);
+WriteCheck(client, "ok");
+ReadCheck(peer, 2);
+AsyncWrite(client, "async");
+_, writable := WaitForIO([], [client] : TimeLimit := 1000);
+#writable;
+AsyncRead(peer, 5);
+#WaitForIO([peer] : TimeLimit := 1000);
+Read(peer);
+AsyncWriteBytes(client, [1, 2, 3, 4]);
+_ := WaitForIO([], [client] : TimeLimit := 1000);
+AsyncReadBytes(peer, 4);
+_ := WaitForIO([peer] : TimeLimit := 1000);
+ReadBytes(peer);
+#WaitForIO([] : TimeLimit := 5);
+

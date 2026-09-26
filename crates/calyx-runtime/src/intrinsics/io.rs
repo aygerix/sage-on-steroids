@@ -20,13 +20,18 @@ impl Interp {
                 let mut f = std::fs::OpenOptions::new().create(true).append(true).open(name.as_str()).map_err(|e| RuntimeError::runtime(format!("Could not open file \"{name}\": {e}")))?;
                 f.write_all(text.as_bytes()).map_err(|e| RuntimeError::runtime(e.to_string()))
             }
-            Value::Io(io) => match &mut *io.state.borrow_mut() {
-                IoState::Writer(f) => f.write_all(text.as_bytes()).map_err(|e| RuntimeError::runtime(e.to_string())),
-                IoState::PipeWriter { stdin: Some(f), .. } => f.write_all(text.as_bytes()).map_err(|e| RuntimeError::runtime(e.to_string())),
-                _ => Err(RuntimeError::runtime("File is not open for writing")),
-            },
+            Value::Io(io) => write_raw(io, text.as_bytes()),
             _ => Err(RuntimeError::runtime("Bad file argument")),
         }
+    }
+}
+
+fn write_raw(io: &IoObj, data: &[u8]) -> RResult<()> {
+    match &mut *io.state.borrow_mut() {
+        IoState::Writer(f) => f.write_all(data).map_err(|e| RuntimeError::runtime(e.to_string())),
+        IoState::PipeWriter { stdin: Some(f), .. } => f.write_all(data).map_err(|e| RuntimeError::runtime(e.to_string())),
+        IoState::Socket { stream, .. } => stream.write_all(data).map_err(|e| RuntimeError::runtime(e.to_string())),
+        _ => Err(RuntimeError::runtime("Channel is not open for writing")),
     }
 }
 
@@ -114,7 +119,7 @@ fn open(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
     let name = a.str(0)?.to_string();
     let mode = a.str(1)?.to_string();
     let state = open_state(&name, &mode)?;
-    one(Value::Io(Rc::new(IoObj { name, mode, kind: IoKind::File, state: std::cell::RefCell::new(state) })))
+    one(Value::Io(IoObj::new(name, mode, IoKind::File, state)))
 }
 
 fn open_state(name: &str, mode: &str) -> RResult<IoState> {
@@ -130,7 +135,7 @@ fn open_test(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
     let name = a.str(0)?.to_string();
     let mode = a.str(1)?.to_string();
     match open_state(&name, &mode) {
-        Ok(state) => Ok(vals![Value::Bool(true), Value::Io(Rc::new(IoObj { name, mode, kind: IoKind::File, state: std::cell::RefCell::new(state) }))]),
+        Ok(state) => Ok(vals![Value::Bool(true), Value::Io(IoObj::new(name, mode, IoKind::File, state))]),
         Err(_) => Ok(vals![Value::Bool(false), Value::Undef]),
     }
 }
@@ -142,7 +147,7 @@ fn io_arg(a: &CallArgs, i: usize) -> Rc<IoObj> {
     }
 }
 
-fn read_raw(io: &Rc<IoObj>, count: Option<usize>) -> RResult<Vec<u8>> {
+fn read_raw(io: &Rc<IoObj>, count: Option<usize>, exact: bool) -> RResult<Vec<u8>> {
     let mut st = io.state.borrow_mut();
     match &mut *st {
         IoState::Reader { data, pos } => {
@@ -169,7 +174,12 @@ fn read_raw(io: &Rc<IoObj>, count: Option<usize>) -> RResult<Vec<u8>> {
                                 *eof = true;
                                 break;
                             }
-                            Ok(k) => got += k,
+                            Ok(k) => {
+                                got += k;
+                                if !exact {
+                                    break;
+                                }
+                            }
                             Err(e) => return Err(RuntimeError::runtime(e.to_string())),
                         }
                     }
@@ -185,17 +195,137 @@ fn read_raw(io: &Rc<IoObj>, count: Option<usize>) -> RResult<Vec<u8>> {
             }
             Ok(out)
         }
+        IoState::Socket { stream, eof } => {
+            if *eof {
+                return Ok(Vec::new());
+            }
+            let mut out = Vec::new();
+            match count {
+                Some(n) => {
+                    let mut got = 0;
+                    let mut buf = [0u8; 64 * 1024];
+                    while got < n {
+                        let want = (n - got).min(buf.len());
+                        match stream.read(&mut buf[..want]) {
+                            Ok(0) => {
+                                *eof = true;
+                                break;
+                            }
+                            Ok(k) => {
+                                out.extend_from_slice(&buf[..k]);
+                                got += k;
+                                if !exact {
+                                    break;
+                                }
+                            }
+                            Err(e) => return Err(RuntimeError::runtime(e.to_string())),
+                        }
+                    }
+                }
+                None => {
+                    let mut buf = [0u8; 8192];
+                    let n = stream.read(&mut buf).map_err(|e| RuntimeError::runtime(e.to_string()))?;
+                    if n == 0 {
+                        *eof = true;
+                    } else {
+                        out.extend_from_slice(&buf[..n]);
+                    }
+                }
+            }
+            Ok(out)
+        }
         _ => Err(RuntimeError::runtime("File is not open for reading")),
+    }
+}
+
+fn take_async_result(io: &IoObj, kind: AsyncReadKind) -> RResult<Option<Vec<u8>>> {
+    let mut state = io.async_io.borrow_mut();
+    if let Some(result) = state.ready.take() {
+        if result.kind != kind {
+            state.ready = Some(result);
+            return Err(RuntimeError::runtime("Queued asynchronous read has a different result type"));
+        }
+        return Ok(Some(result.data));
+    }
+    if state.read.is_some() {
+        return Err(RuntimeError::runtime("Asynchronous read has not completed"));
+    }
+    Ok(None)
+}
+
+fn read_data(io: &Rc<IoObj>, kind: AsyncReadKind, count: Option<usize>, exact: bool) -> RResult<Vec<u8>> {
+    if let Some(data) = take_async_result(io, kind)? {
+        return Ok(data);
+    }
+    read_raw(io, count, exact)
+}
+
+fn read_count(a: &CallArgs) -> RResult<Option<usize>> {
+    if a.args.len() > 1 {
+        return Ok(Some(a.usize(1)?));
+    }
+    match a.param("Max") {
+        Some(Value::Int(n)) if n.sign() > 0 => Ok(Some(n.to_u64().ok_or_else(|| RuntimeError::runtime("Max is too large"))? as usize)),
+        Some(Value::Int(_)) | None => Ok(None),
+        Some(_) => Err(RuntimeError::runtime("Parameter 'Max' must be an integer")),
     }
 }
 
 fn read_io(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
     let io = io_arg(a, 0);
-    let data = read_raw(&io, if a.args.len() > 1 { Some(a.usize(1)?) } else { None })?;
-    if data.is_empty() {
+    let count = read_count(a)?;
+    let data = read_data(&io, AsyncReadKind::Text, count, a.args.len() > 1)?;
+    if data.is_empty() && count != Some(0) {
         return one(Value::str(EOF_MARKER));
     }
     one(Value::str(&String::from_utf8_lossy(&data)))
+}
+
+fn read_check(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    match read_io(it, a) {
+        Ok(mut v) => {
+            let value = v.pop().unwrap_or(Value::Undef);
+            Ok(vals![Value::Bool(true), value])
+        }
+        Err(_) => Ok(vals![Value::Bool(false), Value::Undef]),
+    }
+}
+
+fn bytes_from_seq(a: &CallArgs, i: usize) -> RResult<Vec<u8>> {
+    let s = a.seq(i)?;
+    let mut out = Vec::with_capacity(s.elems.len());
+    for v in &s.elems {
+        let Value::Int(n) = v else { return Err(RuntimeError::runtime("Byte sequence entries must be integers")) };
+        out.push(n.to_u64().filter(|n| *n <= 255).ok_or_else(|| RuntimeError::runtime("Byte sequence entries must be between 0 and 255"))? as u8);
+    }
+    Ok(out)
+}
+
+fn read_bytes(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let io = io_arg(a, 0);
+    let data = read_data(&io, AsyncReadKind::Bytes, read_count(a)?, a.args.len() > 1)?;
+    one(Value::int_seq(data.into_iter().map(|b| calyx_flint::Integer::from_u64(b as u64))))
+}
+
+fn read_bytes_check(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    match read_bytes(it, a) {
+        Ok(mut v) => Ok(vals![Value::Bool(true), v.pop().unwrap_or(Value::Undef)]),
+        Err(_) => Ok(vals![Value::Bool(false), Value::Undef]),
+    }
+}
+
+fn write_bytes(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let io = io_arg(a, 0);
+    write_raw(&io, &bytes_from_seq(a, 1)?)?;
+    none()
+}
+
+fn write_check(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    boolv(put(it, a).is_ok())
+}
+
+fn write_bytes_check(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    boolv(write_bytes(it, a).is_ok())
 }
 
 fn gets(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
@@ -203,7 +333,7 @@ fn gets(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
     let mut line = Vec::new();
     let mut hit_eof = false;
     loop {
-        let b = read_raw(&io, Some(1))?;
+        let b = read_raw(&io, Some(1), true)?;
         if b.is_empty() {
             hit_eof = true;
             break;
@@ -221,7 +351,7 @@ fn gets(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
 
 fn getc(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
     let io = io_arg(a, 0);
-    let data = read_raw(&io, Some(1))?;
+    let data = read_raw(&io, Some(1), true)?;
     if data.is_empty() {
         return one(Value::str(EOF_MARKER));
     }
@@ -257,6 +387,7 @@ fn flush(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
         match &mut *io.state.borrow_mut() {
             IoState::Writer(f) => f.flush().map_err(|e| RuntimeError::runtime(e.to_string()))?,
             IoState::PipeWriter { stdin: Some(f), .. } => f.flush().map_err(|e| RuntimeError::runtime(e.to_string()))?,
+            IoState::Socket { stream, .. } => stream.flush().map_err(|e| RuntimeError::runtime(e.to_string()))?,
             _ => {}
         }
     }
@@ -269,7 +400,7 @@ fn tell(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
     let p = match &mut *io.state.borrow_mut() {
         IoState::Reader { pos, .. } => *pos as i64,
         IoState::Writer(f) => std::io::Seek::stream_position(f).map(|p| p as i64).unwrap_or(0),
-        IoState::PipeReader { .. } | IoState::PipeWriter { .. } | IoState::Closed => 0,
+        IoState::PipeReader { .. } | IoState::PipeWriter { .. } | IoState::ServerSocket { .. } | IoState::Socket { .. } | IoState::Closed => 0,
     };
     one(Value::int(p))
 }
@@ -308,6 +439,7 @@ fn at_eof_value(io: &IoObj) -> bool {
     match &*io.state.borrow() {
         IoState::Reader { data, pos } => *pos >= data.len(),
         IoState::PipeReader { eof, .. } => *eof,
+        IoState::Socket { eof, .. } => *eof,
         _ => true,
     }
 }
@@ -319,6 +451,293 @@ fn io_type(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
         IoKind::Pipe => "pipe",
         IoKind::Socket => "socket",
     }))
+}
+
+fn socket_addr(v: &Value, name: &str) -> RResult<Option<String>> {
+    match v {
+        Value::Undef => Ok(None),
+        Value::Str(s) => Ok(Some(s.to_string())),
+        _ => Err(RuntimeError::runtime(format!("Parameter '{name}' must be a string"))),
+    }
+}
+
+fn socket_port(v: &Value, name: &str) -> RResult<u16> {
+    let Value::Int(n) = v else { return Err(RuntimeError::runtime(format!("{name} must be an integer"))) };
+    n.to_u64().filter(|n| *n <= u16::MAX as u64).map(|n| n as u16).ok_or_else(|| RuntimeError::runtime(format!("{name} must be between 0 and 65535")))
+}
+
+fn socket(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    if a.args.is_empty() {
+        let host = socket_addr(a.param("LocalHost").unwrap_or(&Value::Undef), "LocalHost")?.unwrap_or_else(|| "127.0.0.1".to_string());
+        let port = socket_port(a.param("LocalPort").unwrap_or(&Value::int(0)), "LocalPort")?;
+        let listener = std::net::TcpListener::bind((host.as_str(), port)).map_err(|e| RuntimeError::runtime(format!("Could not open server socket: {e}")))?;
+        let name = listener.local_addr().map(|x| x.to_string()).unwrap_or_else(|_| format!("{host}:{port}"));
+        return one(Value::Io(IoObj::new(name, "rw".to_string(), IoKind::Socket, IoState::ServerSocket { listener, pending: None })));
+    }
+    let host = a.str(0)?.to_string();
+    let port = socket_port(&a.args[1], "Port")?;
+    let local_host = socket_addr(a.param("LocalHost").unwrap_or(&Value::Undef), "LocalHost")?;
+    let local_port = socket_port(a.param("LocalPort").unwrap_or(&Value::int(0)), "LocalPort")?;
+    if local_host.is_some() || local_port != 0 {
+        return Err(RuntimeError::runtime("Explicit local client socket addresses are not supported"));
+    }
+    let stream = std::net::TcpStream::connect((host.as_str(), port)).map_err(|e| RuntimeError::runtime(format!("Could not connect socket: {e}")))?;
+    let _ = stream.set_nodelay(true);
+    one(Value::Io(IoObj::new(format!("{host}:{port}"), "rw".to_string(), IoKind::Socket, IoState::Socket { stream, eof: false })))
+}
+
+fn wait_for_connection(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let server = io_arg(a, 0);
+    let stream = match &mut *server.state.borrow_mut() {
+        IoState::ServerSocket { listener, pending } => match pending.take() {
+            Some(s) => s,
+            None => {
+                listener.set_nonblocking(true).map_err(|e| RuntimeError::runtime(e.to_string()))?;
+                loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => {
+                            let _ = listener.set_nonblocking(false);
+                            break stream;
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            if let Err(e) = it.check_interrupt() {
+                                let _ = listener.set_nonblocking(false);
+                                return Err(e);
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(1));
+                        }
+                        Err(e) => {
+                            let _ = listener.set_nonblocking(false);
+                            return Err(RuntimeError::runtime(format!("Could not accept socket connection: {e}")));
+                        }
+                    }
+                }
+            }
+        },
+        _ => return Err(RuntimeError::runtime("Argument is not a server socket")),
+    };
+    let _ = stream.set_nodelay(true);
+    let name = stream.peer_addr().map(|x| x.to_string()).unwrap_or_else(|_| "socket".to_string());
+    one(Value::Io(IoObj::new(name, "rw".to_string(), IoKind::Socket, IoState::Socket { stream, eof: false })))
+}
+
+fn addr_tuple(a: std::net::SocketAddr) -> Value {
+    Value::tuple(vec![Value::str(&a.ip().to_string()), Value::int(a.port() as i64)])
+}
+
+fn socket_information(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let io = io_arg(a, 0);
+    match &*io.state.borrow() {
+        IoState::ServerSocket { listener, .. } => {
+            let local = listener.local_addr().map_err(|e| RuntimeError::runtime(e.to_string()))?;
+            Ok(vals![addr_tuple(local), Value::Undef])
+        }
+        IoState::Socket { stream, .. } => {
+            let local = stream.local_addr().map_err(|e| RuntimeError::runtime(e.to_string()))?;
+            let peer = stream.peer_addr().map_err(|e| RuntimeError::runtime(e.to_string()))?;
+            Ok(vals![addr_tuple(local), addr_tuple(peer)])
+        }
+        _ => Err(RuntimeError::runtime("Argument is not a socket")),
+    }
+}
+
+fn is_server_socket(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let io = io_arg(a, 0);
+    boolv(matches!(&*io.state.borrow(), IoState::ServerSocket { .. }))
+}
+
+fn socket_readable(io: &IoObj) -> RResult<bool> {
+    match &mut *io.state.borrow_mut() {
+        IoState::ServerSocket { listener, pending } => {
+            if pending.is_some() {
+                return Ok(true);
+            }
+            listener.set_nonblocking(true).map_err(|e| RuntimeError::runtime(e.to_string()))?;
+            let result = match listener.accept() {
+                Ok((stream, _)) => {
+                    *pending = Some(stream);
+                    true
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => false,
+                Err(e) => {
+                    let _ = listener.set_nonblocking(false);
+                    return Err(RuntimeError::runtime(e.to_string()));
+                }
+            };
+            listener.set_nonblocking(false).map_err(|e| RuntimeError::runtime(e.to_string()))?;
+            Ok(result)
+        }
+        IoState::Socket { stream, .. } => {
+            stream.set_nonblocking(true).map_err(|e| RuntimeError::runtime(e.to_string()))?;
+            let mut byte = [0u8; 1];
+            let result = match stream.peek(&mut byte) {
+                Ok(_) => true,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => false,
+                Err(e) => {
+                    let _ = stream.set_nonblocking(false);
+                    return Err(RuntimeError::runtime(e.to_string()));
+                }
+            };
+            stream.set_nonblocking(false).map_err(|e| RuntimeError::runtime(e.to_string()))?;
+            Ok(result)
+        }
+        IoState::Reader { .. } | IoState::PipeReader { .. } => Ok(true),
+        _ => Ok(false),
+    }
+}
+
+fn queue_async_read(io: &Rc<IoObj>, kind: AsyncReadKind, count: Option<usize>, exact: bool) -> RResult<()> {
+    if io.kind == IoKind::Pipe {
+        return Err(RuntimeError::runtime("Asynchronous I/O on pipes is not supported"));
+    }
+    let mut state = io.async_io.borrow_mut();
+    if state.read.is_some() || state.ready.is_some() {
+        return Err(RuntimeError::runtime("An asynchronous read is already queued"));
+    }
+    state.read = Some(PendingRead { kind, count, exact, data: Vec::new() });
+    drop(state);
+    if io.kind == IoKind::File {
+        advance_async(io)?;
+    }
+    Ok(())
+}
+
+fn queue_async_write(io: &Rc<IoObj>, data: Vec<u8>) -> RResult<()> {
+    if io.kind == IoKind::Pipe {
+        return Err(RuntimeError::runtime("Asynchronous I/O on pipes is not supported"));
+    }
+    if io.kind == IoKind::File {
+        return write_raw(io, &data);
+    }
+    io.async_io.borrow_mut().writes.push_back(data);
+    Ok(())
+}
+
+fn advance_async(io: &Rc<IoObj>) -> RResult<()> {
+    let writes: Vec<Vec<u8>> = io.async_io.borrow_mut().writes.drain(..).collect();
+    for data in writes {
+        write_raw(io, &data)?;
+    }
+    if io.async_io.borrow().read.is_none() || io.async_io.borrow().ready.is_some() {
+        return Ok(());
+    }
+    if io.kind == IoKind::Socket && !socket_readable(io)? {
+        return Ok(());
+    }
+    let mut async_io = io.async_io.borrow_mut();
+    let request = async_io.read.as_mut().unwrap();
+    let mut eof = false;
+    match &mut *io.state.borrow_mut() {
+        IoState::Socket { stream, eof: stream_eof } => {
+            stream.set_nonblocking(true).map_err(|e| RuntimeError::runtime(e.to_string()))?;
+            let need = request.count.map(|n| n.saturating_sub(request.data.len())).unwrap_or(8192).max(1);
+            let mut buf = vec![0u8; need.min(8192)];
+            loop {
+                match stream.read(&mut buf) {
+                    Ok(0) => {
+                        *stream_eof = true;
+                        eof = true;
+                        break;
+                    }
+                    Ok(n) => {
+                        request.data.extend_from_slice(&buf[..n]);
+                        if !request.exact || request.count.is_some_and(|m| request.data.len() >= m) {
+                            break;
+                        }
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(e) => {
+                        let _ = stream.set_nonblocking(false);
+                        return Err(RuntimeError::runtime(e.to_string()));
+                    }
+                }
+            }
+            stream.set_nonblocking(false).map_err(|e| RuntimeError::runtime(e.to_string()))?;
+        }
+        IoState::Reader { data, pos } => {
+            let end = request.count.map_or(data.len(), |n| pos.saturating_add(n).min(data.len()));
+            request.data.extend_from_slice(&data[*pos..end]);
+            *pos = end;
+            eof = true;
+        }
+        IoState::ServerSocket { .. } => return Err(RuntimeError::runtime("Cannot queue a data read on a server socket")),
+        _ => return Err(RuntimeError::runtime("Channel is not open for asynchronous reading")),
+    }
+    let complete = eof || (!request.exact && !request.data.is_empty()) || request.count.is_some_and(|n| request.data.len() >= n);
+    if complete {
+        let request = async_io.read.take().unwrap();
+        async_io.ready = Some(AsyncResult { kind: request.kind, data: request.data });
+    }
+    Ok(())
+}
+
+fn async_read(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let io = io_arg(a, 0);
+    let count = read_count(a)?;
+    queue_async_read(&io, AsyncReadKind::Text, count, a.args.len() > 1)?;
+    none()
+}
+
+fn async_read_bytes(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let io = io_arg(a, 0);
+    let count = read_count(a)?;
+    queue_async_read(&io, AsyncReadKind::Bytes, count, a.args.len() > 1)?;
+    none()
+}
+
+fn async_write(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let io = io_arg(a, 0);
+    queue_async_write(&io, a.str(1)?.as_bytes().to_vec())?;
+    none()
+}
+
+fn async_write_bytes(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let io = io_arg(a, 0);
+    queue_async_write(&io, bytes_from_seq(a, 1)?)?;
+    none()
+}
+
+fn time_limit(a: &CallArgs) -> RResult<Option<std::time::Duration>> {
+    match a.param("TimeLimit") {
+        Some(Value::Infinity(true)) | None => Ok(None),
+        Some(Value::Int(n)) => Ok(Some(std::time::Duration::from_millis(n.to_u64().ok_or_else(|| RuntimeError::runtime("TimeLimit must be non-negative"))?))),
+        _ => Err(RuntimeError::runtime("TimeLimit must be a non-negative integer or infinity")),
+    }
+}
+
+fn wait_for_io(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let reads = a.seq(0)?.clone();
+    let writes = if a.args.len() > 1 { Some(a.seq(1)?.clone()) } else { None };
+    let limit = time_limit(a)?;
+    let start = std::time::Instant::now();
+    loop {
+        it.check_interrupt()?;
+        let mut ready_r = Vec::new();
+        for value in &reads.elems {
+            let Value::Io(io) = value else { return Err(RuntimeError::runtime("WaitForIO expects I/O objects")) };
+            advance_async(io)?;
+            if io.async_io.borrow().ready.is_some() || (io.async_io.borrow().read.is_none() && socket_readable(io)?) {
+                ready_r.push(value.clone());
+            }
+        }
+        let mut ready_w = Vec::new();
+        if let Some(writes) = &writes {
+            for value in &writes.elems {
+                let Value::Io(io) = value else { return Err(RuntimeError::runtime("WaitForIO expects I/O objects")) };
+                advance_async(io)?;
+                if io.async_io.borrow().writes.is_empty() && matches!(&*io.state.borrow(), IoState::Writer(_) | IoState::Socket { .. }) {
+                    ready_w.push(value.clone());
+                }
+            }
+        }
+        let expired = limit.is_some_and(|d| start.elapsed() >= d);
+        if !ready_r.is_empty() || !ready_w.is_empty() || expired {
+            let r = Value::seq(reads.universe.clone(), ready_r);
+            return if let Some(w) = writes { Ok(vals![r, Value::seq(w.universe.clone(), ready_w)]) } else { one(r) };
+        }
+        let pause = limit.map(|d| d.saturating_sub(start.elapsed()).min(std::time::Duration::from_millis(1))).unwrap_or(std::time::Duration::from_millis(1));
+        std::thread::sleep(pause);
+    }
 }
 
 fn popen(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
@@ -339,7 +758,7 @@ fn popen(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
         }
         _ => return Err(RuntimeError::runtime(format!("Bad mode \"{mode}\""))),
     };
-    one(Value::Io(Rc::new(IoObj { name: cmd, mode, kind: IoKind::Pipe, state: std::cell::RefCell::new(state) })))
+    one(Value::Io(IoObj::new(cmd, mode, IoKind::Pipe, state)))
 }
 
 fn system(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
@@ -510,14 +929,24 @@ pub fn register(it: &mut Interp) {
     it.def("Open", "F::MonStgElt, M::MonStgElt -> IO", "Open the file F with mode \"r\", \"w\" or \"a\".", open);
     it.def("OpenTest", "F::MonStgElt, M::MonStgElt -> BoolElt, IO", "Try to open the file F; return whether this succeeded and the file.", open_test);
     it.def("POpen", "C::MonStgElt, M::MonStgElt -> IO", "Run C and open a one-way pipe with mode \"r\" or \"w\".", popen);
-    it.def("Read", "I::IO -> MonStgElt", "The remaining contents of I.", read_io);
+    let max = [("Max", Value::int(0))];
+    it.def_params("Read", "I::IO -> MonStgElt", &max, "Data available from I, optionally limited to Max bytes.", read_io);
     it.def("Read", "I::IO, n::RngIntElt -> MonStgElt", "Up to n characters from I.", read_io);
+    it.def_params("ReadCheck", "I::IO -> BoolElt, MonStgElt", &max, "Whether a read succeeded and its data.", read_check);
+    it.def("ReadCheck", "I::IO, n::RngIntElt -> BoolElt, MonStgElt", "Whether an n-byte read succeeded and its data.", read_check);
+    it.def_params("ReadBytes", "I::IO -> SeqEnum", &max, "Bytes available from I, optionally limited to Max bytes.", read_bytes);
+    it.def("ReadBytes", "I::IO, n::RngIntElt -> SeqEnum", "Up to n bytes from I.", read_bytes);
+    it.def_params("ReadBytesCheck", "I::IO -> BoolElt, SeqEnum", &max, "Whether a byte read succeeded and its data.", read_bytes_check);
+    it.def("ReadBytesCheck", "I::IO, n::RngIntElt -> BoolElt, SeqEnum", "Whether an n-byte read succeeded and its data.", read_bytes_check);
     it.def("Gets", "I::IO -> MonStgElt", "The next line of I (without its newline).", gets);
     it.def("Getc", "I::IO -> MonStgElt", "The next character of I.", getc);
     it.def("Ungetc", "I::IO, c::MonStgElt", "Push back the last character read from I.", ungetc);
     it.def("Puts", "I::., s::MonStgElt", "Write s and a newline to I.", puts);
     it.def("Put", "I::., s::MonStgElt", "Write s to I.", put);
     it.def("Write", "I::IO, s::MonStgElt", "Write s to I.", put);
+    it.def("WriteCheck", "I::IO, s::MonStgElt -> BoolElt", "Whether s was written to I.", write_check);
+    it.def("WriteBytes", "I::IO, S::SeqEnum", "Write the bytes in S to I.", write_bytes);
+    it.def("WriteBytesCheck", "I::IO, S::SeqEnum -> BoolElt", "Whether the bytes in S were written to I.", write_bytes_check);
     it.def("Flush", "I::IO", "Flush buffered output of I.", flush);
     it.def("Flush", "", "Flush standard output.", flush);
     it.def("Tell", "I::IO -> RngIntElt", "The current position in I.", tell);
@@ -527,6 +956,21 @@ pub fn register(it: &mut Interp) {
     it.def("IsEof", "S::MonStgElt -> BoolElt", "Whether S is the end-of-file marker.", is_eof);
     it.def("AtEof", "I::IO -> BoolElt", "Whether I is at end of file.", at_eof);
     it.def("IOType", "I::IO -> MonStgElt", "The kind of I/O object I is.", io_type);
+    let socket_params = [("LocalHost", Value::Undef), ("LocalPort", Value::int(0))];
+    it.def_params("Socket", "H::MonStgElt, P::RngIntElt -> IOSocket", &socket_params, "Connect a TCP socket to H and P.", socket);
+    it.def_params("Socket", "-> IOSocket", &socket_params, "Open a TCP server socket.", socket);
+    it.def("WaitForConnection", "S::IOSocket -> IO", "Accept a connection on server socket S.", wait_for_connection);
+    it.def("SocketInformation", "S::IO -> Tup, Tup", "The local and remote addresses of S.", socket_information);
+    it.def("IsServerSocket", "S::IO -> BoolElt", "Whether S is a server socket.", is_server_socket);
+    let wait = [("TimeLimit", Value::Infinity(true))];
+    it.def_params("WaitForIO", "R::SeqEnum -> SeqEnum", &wait, "Wait for readable channels in R.", wait_for_io);
+    it.def_params("WaitForIO", "R::SeqEnum, W::SeqEnum -> SeqEnum, SeqEnum", &wait, "Wait for readable channels in R and writable channels in W.", wait_for_io);
+    it.def_params("AsyncRead", "I::IO", &max, "Queue a string read from I.", async_read);
+    it.def("AsyncRead", "I::IO, n::RngIntElt", "Queue an n-byte string read from I.", async_read);
+    it.def("AsyncWrite", "I::IO, s::MonStgElt", "Queue a string write to I.", async_write);
+    it.def_params("AsyncReadBytes", "I::IO", &max, "Queue a byte-sequence read from I.", async_read_bytes);
+    it.def("AsyncReadBytes", "I::IO, n::RngIntElt", "Queue an n-byte sequence read from I.", async_read_bytes);
+    it.def("AsyncWriteBytes", "I::IO, S::SeqEnum", "Queue a byte-sequence write to I.", async_write_bytes);
     it.def("System", "C::MonStgElt -> RngIntElt", "Run the shell command C and return its status.", system);
     it.def("Pipe", "C::MonStgElt, S::MonStgElt -> MonStgElt", "Run the shell command C with input S and return its output.", pipe);
     it.def("GetEnv", "S::MonStgElt -> MonStgElt", "The value of the environment variable S.", get_env);

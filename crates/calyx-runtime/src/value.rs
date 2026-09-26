@@ -6,6 +6,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::cmp::Ordering;
+use std::collections::VecDeque;
 use std::hash::{BuildHasherDefault, Hash, Hasher};
 use std::rc::Rc;
 
@@ -608,6 +609,7 @@ pub struct IoObj {
     pub mode: String,
     pub kind: IoKind,
     pub state: RefCell<IoState>,
+    pub async_io: RefCell<AsyncIo>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -622,7 +624,41 @@ pub enum IoState {
     Writer(std::fs::File),
     PipeReader { child: std::process::Child, stdout: std::process::ChildStdout, eof: bool },
     PipeWriter { child: std::process::Child, stdin: Option<std::process::ChildStdin> },
+    ServerSocket { listener: std::net::TcpListener, pending: Option<std::net::TcpStream> },
+    Socket { stream: std::net::TcpStream, eof: bool },
     Closed,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum AsyncReadKind {
+    Text,
+    Bytes,
+    Object,
+}
+
+pub struct PendingRead {
+    pub kind: AsyncReadKind,
+    pub count: Option<usize>,
+    pub exact: bool,
+    pub data: Vec<u8>,
+}
+
+pub struct AsyncResult {
+    pub kind: AsyncReadKind,
+    pub data: Vec<u8>,
+}
+
+#[derive(Default)]
+pub struct AsyncIo {
+    pub read: Option<PendingRead>,
+    pub ready: Option<AsyncResult>,
+    pub writes: VecDeque<Vec<u8>>,
+}
+
+impl IoObj {
+    pub fn new(name: String, mode: String, kind: IoKind, state: IoState) -> Rc<IoObj> {
+        Rc::new(IoObj { name, mode, kind, state: RefCell::new(state), async_io: RefCell::default() })
+    }
 }
 
 impl Drop for IoObj {
@@ -818,7 +854,7 @@ impl Value {
             Value::Err(_) => t::ERR,
             Value::Obj(o) => o.ty,
             Value::CopElt(_) => t::COP_ELT,
-            Value::Io(_) => t::IO,
+            Value::Io(io) => if io.kind == IoKind::Socket { t::IO_SOCKET } else { t::IO },
             Value::Elt(e) => e.ring().elt_type(),
             Value::Small(r, _) => r.elt_type(),
             Value::Perm(_) => t::GRP_PERM_ELT,

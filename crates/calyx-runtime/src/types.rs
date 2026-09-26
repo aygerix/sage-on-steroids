@@ -73,6 +73,7 @@ builtin_types! {
     ECAT = "ECat": [ANY],
     ERR = "Err": [ANY],
     IO = "IO": [ANY],
+    IO_SOCKET = "IOSocket": [IO],
     POW_STR = "PowStr": [STR],
     RNG_INT_RES = "RngIntRes": [RNG],
     RNG_INT_RES_ELT = "RngIntResElt": [RNG_ELT],
