@@ -68,3 +68,19 @@ Sqrt(DirichletGroup(5)!1);
 Sqrt(DirichletGroup(1).0);
 Sqrt(DirichletGroup(35)!1);
 Sqrt(DirichletGroup(8)!1);
+
+// Separate calls give equal groups, but aggregates find no common universe
+// for their elements (#89). Coercion into one of them, as by Append, still
+// works.
+G := DirichletGroup(12); H := DirichletGroup(12);
+G eq H; G.1 eq H.1; G.1 * H.2;
+[G.1, G.2];
+[G.1, H.2];
+[H.1, G.1, G.2];
+{G.1, H.1};
+[* G.1, H.1 *]; <G.1, H.1>; [G, H]; {G, H};
+GaloisConjugacyRepresentatives([DirichletGroup(12).1, DirichletGroup(12).2]);
+S := [G.1]; Append(~S, H.1); S; Universe(S) eq G;
+S := [G.1]; S[2] := H.1; S;
+[G.1] cat [H.1];
+CoveringStructure(G, H);

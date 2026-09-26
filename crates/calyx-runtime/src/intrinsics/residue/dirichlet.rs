@@ -457,6 +457,16 @@ pub fn same_group(a: &DrchGroup, b: &DrchGroup) -> bool {
     a.modulus == b.modulus && a.r == b.r && a.ring == b.ring && a.zeta == b.zeta
 }
 
+/// Whether a and b are different groups of characters: Magma finds no
+/// common universe for them, even when they are equal (as the groups of
+/// two calls of `DirichletGroup(N)` are).
+pub fn distinct_groups(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Struct(x), Value::Struct(y)) => matches!((&x.kind, &y.kind), (StructKind::DrchGroup(_), StructKind::DrchGroup(_))) && !Rc::ptr_eq(x, y),
+        _ => false,
+    }
+}
+
 impl DrchElt {
     pub fn group(&self) -> &DrchGroup {
         group_of(&self.group)
