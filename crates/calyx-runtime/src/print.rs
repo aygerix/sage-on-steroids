@@ -247,7 +247,7 @@ impl Printer {
 /// Whether an element prints on one line inside an aggregate.
 fn is_simple(v: &Value) -> bool {
     match v {
-        Value::Int(_) | Value::Rat(_) | Value::Real(_) | Value::Complex(_) | Value::Bool(_) | Value::Str(_) | Value::Cat(_) | Value::ECat(_) | Value::Undef | Value::Intr(_) | Value::Infinity(_) => true,
+        Value::Int(_) | Value::Rat(_) | Value::Real(_) | Value::Complex(_) | Value::Bool(_) | Value::Str(_) | Value::BStr(_) | Value::Cat(_) | Value::ECat(_) | Value::Undef | Value::Intr(_) | Value::Infinity(_) => true,
         Value::Tuple(t) => t.elems.iter().all(is_simple),
         Value::List(_) => true,
         Value::CopElt(c) => is_simple(&c.value),
@@ -464,6 +464,26 @@ impl Interp {
                     p.quoted(&quote_string(s));
                 } else {
                     p.text(s);
+                }
+            }
+            Value::BStr(s) => {
+                if p.level == Level::Magma {
+                    p.write("BinaryString(");
+                }
+                if s.is_empty() {
+                    p.write("[]");
+                } else {
+                    p.write("[ ");
+                    for (i, b) in s.iter().enumerate() {
+                        if i > 0 {
+                            p.write(", ");
+                        }
+                        p.write(&b.to_string());
+                    }
+                    p.write(" ]");
+                }
+                if p.level == Level::Magma {
+                    p.write(")");
                 }
             }
             Value::Seq(s) => {

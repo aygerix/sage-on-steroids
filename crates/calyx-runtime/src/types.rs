@@ -44,6 +44,7 @@ builtin_types! {
     BOOL_ELT = "BoolElt": [ELT],
     MON_STG = "MonStg": [STR],
     MON_STG_ELT = "MonStgElt": [ELT],
+    B_STG_ELT = "BStgElt": [ELT],
     SET = "Set": [ANY],
     SEQ_ENUM = "SeqEnum": [ANY],
     SET_ENUM = "SetEnum": [SET],

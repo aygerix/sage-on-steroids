@@ -39,6 +39,7 @@ pub fn value_kind(v: &Value) -> &'static str {
         Value::Real(_) => "FldReElt",
         Value::Complex(_) => "FldComElt",
         Value::Str(_) => "MonStgElt",
+        Value::BStr(_) => "BStgElt",
         Value::Seq(_) => "SeqEnum",
         Value::Set(_) => "SetEnum",
         Value::ISet(_) => "SetIndx",

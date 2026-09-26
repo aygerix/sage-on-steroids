@@ -24,6 +24,7 @@ impl Interp {
             Value::Real(r) => Value::reals(r.x.prec()),
             Value::Complex(c) => self.complex_field(c.prec()),
             Value::Str(_) => Value::strings(),
+            Value::BStr(_) => Value::structure(StructKind::PowerStructure(t::B_STG_ELT)),
             Value::Seq(s) if s.fact => Value::structure(StructKind::PowerStructure(t::RNG_INT_ELT_FACT)),
             Value::Seq(s) => Value::structure(StructKind::PowerSeq(s.universe.clone())),
             Value::Set(s) => Value::structure(StructKind::PowerSet(s.universe.clone())),
@@ -633,6 +634,7 @@ impl Interp {
             Value::Rat(_) => 2,
             Value::Bool(_) => 3,
             Value::Str(_) => 4,
+            Value::BStr(_) => 5,
             _ => 0,
         };
         let k = kind(&vals[0]);
