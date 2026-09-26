@@ -2,8 +2,8 @@
 
 set -euo pipefail
 
-if [[ $# -ne 2 ]]; then
-    echo "usage: $0 BINARY PACKAGE_ROOT" >&2
+if [[ $# -lt 2 || $# -gt 3 ]]; then
+    echo "usage: $0 BINARY PACKAGE_ROOT [AVX2_LIBRARY_DIR]" >&2
     exit 2
 fi
 
@@ -11,6 +11,7 @@ script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/../.." && pwd)
 binary=$1
 package_root=$2
+avx2_library_dir=${3:-}
 
 if [[ ! -x "$binary" ]]; then
     echo "not an executable: $binary" >&2
@@ -29,6 +30,24 @@ source "$script_dir/common.sh"
 package_common_files "$repo_root" "$package_root"
 cp "$binary" "$package_root/bin/calyx"
 
+queue=("$package_root/bin/calyx")
+if [[ -n "$avx2_library_dir" ]]; then
+    avx2_flint=$avx2_library_dir/libflint.so
+    if [[ ! -e "$avx2_flint" ]]; then
+        echo "AVX2 FLINT library not found: $avx2_flint" >&2
+        exit 1
+    fi
+    avx2_soname=$(patchelf --print-soname "$avx2_flint")
+    if [[ -z "$avx2_soname" ]]; then
+        echo "AVX2 FLINT library has no soname: $avx2_flint" >&2
+        exit 1
+    fi
+    avx2_destination=$package_root/lib/glibc-hwcaps/x86-64-v3/$avx2_soname
+    mkdir -p "$(dirname "$avx2_destination")"
+    cp -L "$avx2_flint" "$avx2_destination"
+    queue+=("$avx2_destination")
+fi
+
 is_system_library() {
     case "$1" in
         linux-vdso.so.*|ld-linux*.so*|libc.so.*|libdl.so.*|libm.so.*|libpthread.so.*|libresolv.so.*|librt.so.*|libutil.so.*)
@@ -40,7 +59,6 @@ is_system_library() {
     esac
 }
 
-queue=("$package_root/bin/calyx")
 next=0
 while (( next < ${#queue[@]} )); do
     if (( next >= 256 )); then
@@ -64,7 +82,9 @@ while (( next < ${#queue[@]} )); do
 done
 
 patchelf --set-rpath '$ORIGIN/../lib' "$package_root/bin/calyx"
-for library in "$package_root"/lib/*; do
-    [[ -e "$library" ]] || continue
-    patchelf --set-rpath '$ORIGIN' "$library"
-done
+while IFS= read -r -d '' library; do
+    case "$library" in
+        */glibc-hwcaps/x86-64-v3/*) patchelf --set-rpath '$ORIGIN/../..' "$library" ;;
+        *) patchelf --set-rpath '$ORIGIN' "$library" ;;
+    esac
+done < <(find "$package_root/lib" -type f -print0)
