@@ -10,4 +10,21 @@ DotProduct(u,v);
 DotProductMatrix([u,v]);
 GramMatrix(V);
 IsNondegenerate(V);
-Dimension(Radical(V));
+R := Radical(V);
+BasisMatrix(R);
+OrthogonalComplement(V,R) eq V;
+RR := Radical(V : Right := true);
+BasisMatrix(RR);
+OrthogonalComplement(V,RR : Right := true) eq V;
+
+// A degenerate hermitian form distinguishes the left and right radicals.
+L<a> := GF(9);
+H, sigma := StandardHermitianForm(3,L);
+H[2,2] := 0;
+U := VectorSpace(L,3,H);
+U`Involution := sigma;
+BasisMatrix(Radical(U));
+BasisMatrix(Radical(U : Right := true));
+IsNondegenerate(U);
+GramMatrix(U);
+DotProductMatrix(Basis(U));

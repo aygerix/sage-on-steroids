@@ -124,6 +124,10 @@ fn apply_map_to_matrix(it: &mut Interp, ring: &Value, m: &Mat, map: Option<&Rc<M
 fn space_with_basis(st: &Rc<Struct>, basis: Mat) -> RResult<Rc<Struct>> {
     let full = full_space(st);
     let mp = crate::intrinsics::matrices::info(&full);
+    let x = Mtrx { parent: full.clone(), m: basis };
+    let (basis, _) = crate::intrinsics::matrices::echelon(&x, false)?;
+    let rank = (0..basis.nrows()).take_while(|&i| (0..basis.ncols()).any(|j| !basis.entry_is_zero(i, j))).count();
+    let basis = basis.block(0, 0, rank, basis.ncols());
     if basis.nrows() == mp.ncols && basis.equal(&Mat::identity(&mp.ctx, mp.ncols).map_err(gr)?) == Truth::True {
         return Ok(full);
     }
