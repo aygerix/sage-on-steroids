@@ -622,7 +622,7 @@ pub enum IoKind {
 pub enum IoState {
     Reader { data: Vec<u8>, pos: usize },
     Writer(std::fs::File),
-    PipeReader { child: std::process::Child, stdout: std::process::ChildStdout, eof: bool },
+    PipeReader { child: std::process::Child, stdout: Option<std::io::BufReader<std::process::ChildStdout>>, eof: bool },
     PipeWriter { child: std::process::Child, stdin: Option<std::process::ChildStdin> },
     ServerSocket { listener: std::net::TcpListener, pending: Option<std::net::TcpStream> },
     Socket { stream: std::net::TcpStream, eof: bool },
@@ -666,6 +666,9 @@ impl Drop for IoObj {
         if let Ok(mut state) = self.state.try_borrow_mut() {
             if let IoState::PipeWriter { child, stdin } = &mut *state {
                 stdin.take();
+                let _ = child.wait();
+            } else if let IoState::PipeReader { child, stdout, .. } = &mut *state {
+                stdout.take();
                 let _ = child.wait();
             }
         }

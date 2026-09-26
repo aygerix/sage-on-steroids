@@ -172,18 +172,21 @@ fn read_raw(io: &Rc<IoObj>, count: Option<usize>, exact: bool) -> RResult<Vec<u8
             if *eof {
                 return Ok(Vec::new());
             }
+            let stdout = stdout.as_mut().ok_or_else(|| RuntimeError::runtime("Process output is closed"))?;
             let mut out = Vec::new();
             match count {
                 Some(n) => {
-                    out.resize(n, 0);
                     let mut got = 0;
+                    let mut buf = [0u8; 8192];
                     while got < n {
-                        match stdout.read(&mut out[got..]) {
+                        let want = (n - got).min(buf.len());
+                        match stdout.read(&mut buf[..want]) {
                             Ok(0) => {
                                 *eof = true;
                                 break;
                             }
                             Ok(k) => {
+                                out.extend_from_slice(&buf[..k]);
                                 got += k;
                                 if !exact {
                                     break;
@@ -192,7 +195,6 @@ fn read_raw(io: &Rc<IoObj>, count: Option<usize>, exact: bool) -> RResult<Vec<u8
                             Err(e) => return Err(RuntimeError::runtime(e.to_string())),
                         }
                     }
-                    out.truncate(got);
                 }
                 None => {
                     stdout.read_to_end(&mut out).map_err(|e| RuntimeError::runtime(e.to_string()))?;
@@ -757,6 +759,15 @@ fn write_object_check(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
 
 fn gets(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
     let io = io_arg(a, 0);
+    if let IoState::Reader { data, pos } = &mut *io.state.borrow_mut() {
+        if *pos >= data.len() {
+            return one(Value::str(EOF_MARKER));
+        }
+        let end = data[*pos..].iter().position(|b| *b == b'\n').map_or(data.len(), |n| *pos + n);
+        let line = String::from_utf8_lossy(&data[*pos..end]).to_string();
+        *pos = (end + 1).min(data.len());
+        return one(Value::string(line));
+    }
     let mut line = Vec::new();
     let mut hit_eof = false;
     loop {
@@ -1206,7 +1217,7 @@ fn popen(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
         "r" => {
             let mut child = command.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).spawn().map_err(|e| RuntimeError::runtime(e.to_string()))?;
             let stdout = child.stdout.take().ok_or_else(|| RuntimeError::runtime("Could not open process output"))?;
-            IoState::PipeReader { child, stdout, eof: false }
+            IoState::PipeReader { child, stdout: Some(std::io::BufReader::new(stdout)), eof: false }
         }
         "w" => {
             let mut child = command.stdin(std::process::Stdio::piped()).spawn().map_err(|e| RuntimeError::runtime(e.to_string()))?;
