@@ -7,4 +7,4 @@ set -eu
 script_dir=$(CDPATH= cd "$(dirname "$0")" && pwd)
 . "$script_dir/common.sh"
 
-build_flint "$1" "${2:-}" "-O3" --with-blas
+build_flint "$1" "${2:-}" "-O3" "OpenBLAS" --with-blas

@@ -36,6 +36,7 @@ dependencies = [
 name = "calyx-cli"
 version = "0.1.0"
 dependencies = [
+ "calyx-flint",
  "calyx-runtime",
  "calyx-syntax",
  "ctrlc",

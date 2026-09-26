@@ -9,5 +9,5 @@ script_dir=$(CDPATH= cd "$(dirname "$0")" && pwd)
 
 sdk=$(xcrun --show-sdk-path)
 deps=${FLINT_DEPS_PREFIX:-/opt/homebrew}
-build_flint "$1" "${2:-}" "-O3" --with-gmp="$deps" --with-mpfr="$deps" --with-blas \
+build_flint "$1" "${2:-}" "-O3" "Accelerate" --with-gmp="$deps" --with-mpfr="$deps" --with-blas \
     CPPFLAGS="-I$sdk/System/Library/Frameworks/vecLib.framework/Headers" LIBS="-framework Accelerate"

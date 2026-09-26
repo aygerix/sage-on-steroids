@@ -11,6 +11,7 @@ name = "calyx"
 path = "src/main.rs"
 
 [dependencies]
+calyx-flint = { workspace = true }
 calyx-runtime = { workspace = true }
 calyx-syntax = { workspace = true }
 rustyline = { workspace = true }
