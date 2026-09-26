@@ -24,3 +24,18 @@ Runtime error in 'RestrictedPartitions': Argument 1 (536870912) is too large
                        ^
 Runtime error in 'RestrictedPartitions': Argument 1 (536870912) is too large
 
+[
+    [ 1000000000 ]
+]
+1 1000000
+2
+
+>> Partitions(10^9, 2);
+             ^
+Runtime error in 'Partitions': Argument 1 (1000000000) is too large
+
+
+>> Partitions(2^30 - 1, 2^30 - 1);
+             ^
+Runtime error in 'Partitions': Argument 1 (1073741823) is too large
+
