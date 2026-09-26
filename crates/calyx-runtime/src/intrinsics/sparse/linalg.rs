@@ -87,6 +87,7 @@ fn subspace(it: &mut Interp, ring: &Value, degree: usize, basis: Mat) -> RResult
         field: fp.field,
         ctx: fp.ctx.clone(),
         sub: Some(Sub { full, basis, echelonized: true }),
+        form: None,
     };
     Ok(Value::Struct(Struct::new(StructKind::Matrices(Rc::new(p)))))
 }

@@ -24,7 +24,7 @@ pub fn subspace(full: &Rc<Struct>, basis: Mat) -> RResult<Rc<Struct>> {
         return Ok(full.clone());
     }
     let sub = Sub { full: full.clone(), basis, echelonized: true };
-    let p = MatParent { ring: mp.ring.clone(), nrows: 1, ncols: n, shape: Shape::Tuples, field: mp.field, ctx: mp.ctx.clone(), sub: Some(sub) };
+    let p = MatParent { ring: mp.ring.clone(), nrows: 1, ncols: n, shape: Shape::Tuples, field: mp.field, ctx: mp.ctx.clone(), sub: Some(sub), form: None };
     Ok(Struct::new(StructKind::Matrices(Rc::new(p))))
 }
 
