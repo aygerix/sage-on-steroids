@@ -1,6 +1,7 @@
 //! Sparse matrices (#77), stored as sorted nonzero entries in each row.
 
 mod linalg;
+mod determinant;
 
 use std::cell::RefCell;
 use std::hash::{Hash, Hasher};
@@ -1453,4 +1454,5 @@ pub fn register(it: &mut Interp) {
     it.def("MultiplyByTranspose", "v::ModTupRngElt, A::MtrxSprs -> ModTupRngElt", "v times the transpose of A.", multiply_by_transpose);
     it.def("MultiplyByTranspose", "V::Mtrx, A::MtrxSprs -> Mtrx", "V times the transpose of A.", multiply_by_transpose);
     linalg::register(it);
+    determinant::register(it);
 }
