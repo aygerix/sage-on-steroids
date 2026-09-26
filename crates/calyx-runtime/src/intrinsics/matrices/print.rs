@@ -112,7 +112,7 @@ pub fn fmt_matrix(it: &mut Interp, p: &mut Printer, a: &Mtrx, indent: usize) -> 
 
 /// The rows of `m`, a matrix over `ring` with at least one entry, one per
 /// line: in brackets, or in parentheses as vectors.
-fn fmt_rows(it: &mut Interp, p: &mut Printer, ring: &Value, m: &Mat, vectors: bool, indent: usize) -> RResult<()> {
+pub fn fmt_rows(it: &mut Interp, p: &mut Printer, ring: &Value, m: &Mat, vectors: bool, indent: usize) -> RResult<()> {
     let (r, c) = (m.nrows(), m.ncols());
     let level = if p.level == Level::Hex { Level::Hex } else { Level::Default };
     let texts = entry_texts(it, ring, m, level)?;

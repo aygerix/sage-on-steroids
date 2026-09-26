@@ -16,6 +16,7 @@ pub mod groebner;
 pub mod ideals;
 pub mod ints;
 pub mod io;
+pub mod lattices;
 pub mod maps;
 pub mod matrices;
 pub mod polar;
@@ -547,6 +548,8 @@ pub fn register_all(it: &mut Interp) {
     matrices::register(it);
     polar::register(it);
     sparse::register(it);
+    // Part V.
+    lattices::register(it);
     io::register(it);
     env::register(it);
 }

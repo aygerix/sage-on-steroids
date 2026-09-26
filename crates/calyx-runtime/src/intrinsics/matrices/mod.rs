@@ -49,7 +49,7 @@ pub use access::{index, set_index};
 pub use arith::{binop, equal, negate};
 pub use creation::coerce;
 pub use linalg::{echelon, rank_of};
-pub use print::{fmt_matrix, fmt_parent};
+pub use print::{fmt_matrix, fmt_parent, fmt_rows};
 pub use spaces::elements;
 pub use vectors::{form_space, inner_product_matrix};
 

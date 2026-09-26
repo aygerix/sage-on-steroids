@@ -145,6 +145,10 @@ builtin_types! {
     // Sparse matrices (#77).
     MTRX_SPRS_STR = "MtrxSprsStr": [STR],
     MTRX_SPRS = "MtrxSprs": [MTRX],
+
+    // Lattices (#96).
+    LAT = "Lat": [STR],
+    LAT_ELT = "LatElt": [ELT],
 }
 
 #[derive(Clone, Debug)]
@@ -226,6 +230,9 @@ impl TypeRegistry {
 
             // Sparse matrices (#77).
             (t::MTRX_SPRS_STR, t::MTRX_SPRS),
+
+            // Lattices (#96).
+            (t::LAT, t::LAT_ELT),
         ];
         for (s, e) in elts {
             r.types[s.0 as usize].elt_type = Some(e);
