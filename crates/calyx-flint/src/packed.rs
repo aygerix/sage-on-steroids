@@ -63,9 +63,27 @@ pub(crate) trait Kernel: 'static {
     /// The element c_0 + c_1 x + ... for at most 2n - 1 coefficients c_i
     /// below p, reduced modulo the modulus.
     fn reduce_coeffs(&self, c: &[u64]) -> Self::E;
-    /// The length of the shorter factor from which products of polynomials
-    /// go by Kronecker substitution (see `poly_mullow`).
-    fn ks_cutoff(&self) -> usize;
+    /// Where polynomial algorithms change over.
+    fn cutoffs(&self) -> Cutoffs;
+}
+
+/// The lengths from which polynomial arithmetic over a packed field takes
+/// the fast algorithms, as measured: below them the classical ones are
+/// faster. The fast ones rest on products by Kronecker substitution, which
+/// cost far more for p = 2, where FLINT takes a word for each bit, while
+/// products of coefficients cost less.
+#[derive(Clone, Copy)]
+pub(crate) struct Cutoffs {
+    /// Products by substitution, by the shorter factor (see `poly_mullow`).
+    ks: usize,
+    /// Half-gcd for gcds, and for gcds with cofactors, by the shorter
+    /// polynomial (see `poly_gcd_op`).
+    gcd: usize,
+    xgcd: usize,
+    /// Newton's division, by the divisor and by the quotient (see
+    /// `poly_divrem_op`).
+    divisor: usize,
+    quotient: usize,
 }
 
 impl<const W: usize> Kernel for Gf2Words<W> {
@@ -152,10 +170,9 @@ impl<const W: usize> Kernel for Gf2Words<W> {
         Gf2Words::reduce_coeffs(self, c)
     }
 
-    /// A bit takes a word in FLINT's polynomials over F_2, so substitution
-    /// pays only for long products.
-    fn ks_cutoff(&self) -> usize {
-        3 * self.degree() as usize
+    fn cutoffs(&self) -> Cutoffs {
+        let n = self.degree() as usize;
+        Cutoffs { ks: 3 * n, gcd: 80 * n, xgcd: 40 * n, divisor: 8 * n, quotient: 3 * n }
     }
 }
 
@@ -236,8 +253,8 @@ impl<T: Lane, const N: usize> Kernel for FpLanes<T, N> {
         FpLanes::reduce_coeffs(self, c)
     }
 
-    fn ks_cutoff(&self) -> usize {
-        6
+    fn cutoffs(&self) -> Cutoffs {
+        Cutoffs { ks: 6, gcd: 100, xgcd: 64, divisor: 16, quotient: 6 }
     }
 }
 
@@ -628,7 +645,7 @@ unsafe extern "C" fn poly_mullow<K: Kernel>(
     ctx: GrCtx,
 ) -> c_int {
     let pk = unsafe { packed::<K>(ctx) };
-    if (la.min(lb) as usize) < pk.k.ks_cutoff() || len < 1 {
+    if (la.min(lb) as usize) < pk.k.cutoffs().ks || len < 1 {
         return unsafe { sys::_gr_poly_mullow_generic(res, a, la, b, lb, len, ctx) };
     }
     let (n, s) = (pk.head.n as usize, 2 * pk.head.n as usize - 1);
@@ -657,6 +674,67 @@ unsafe extern "C" fn poly_mullow<K: Kernel>(
         unsafe { put::<K>((res as *mut K::E).add(k).cast(), pk.k.reduce_coeffs(block)) };
     }
     SUCCESS
+}
+
+/// The cutoff below which half-gcd recurses no further (fq_nmod's).
+const HGCD_INNER: sys::slong = 25;
+
+/// A gcd, not made monic (`gr_poly_gcd` does that), of the polynomials a
+/// and b of lengths la >= lb >= 1. gr's generic gcd over a field runs
+/// Euclid's algorithm at every length; long ones here go by half-gcd, as
+/// fq_nmod's do, with products by substitution.
+unsafe extern "C" fn poly_gcd_op<K: Kernel>(
+    g: *mut c_void,
+    lg: *mut sys::slong,
+    a: *const c_void,
+    la: sys::slong,
+    b: *const c_void,
+    lb: sys::slong,
+    ctx: GrCtx,
+) -> c_int {
+    let c = unsafe { packed::<K>(ctx) }.k.cutoffs();
+    if (lb as usize) < c.gcd {
+        return unsafe { sys::_gr_poly_gcd_euclidean(g, lg, a, la, b, lb, ctx) };
+    }
+    unsafe { sys::_gr_poly_gcd_hgcd(g, lg, a, la, b, lb, HGCD_INNER, c.gcd as sys::slong, ctx) }
+}
+
+/// The same with cofactors, g = s a + t b.
+unsafe extern "C" fn poly_xgcd_op<K: Kernel>(
+    lg: *mut sys::slong,
+    g: *mut c_void,
+    s: *mut c_void,
+    t: *mut c_void,
+    a: *const c_void,
+    la: sys::slong,
+    b: *const c_void,
+    lb: sys::slong,
+    ctx: GrCtx,
+) -> c_int {
+    let c = unsafe { packed::<K>(ctx) }.k.cutoffs();
+    if (lb as usize) < c.xgcd {
+        return unsafe { sys::_gr_poly_xgcd_euclidean(lg, g, s, t, a, la, b, lb, ctx) };
+    }
+    unsafe { sys::_gr_poly_xgcd_hgcd(lg, g, s, t, a, la, b, lb, HGCD_INNER, c.gcd as sys::slong, ctx) }
+}
+
+/// The quotient and remainder of a by b, of lengths la >= lb >= 1. gr's
+/// generic division goes by Newton iteration; the classical one is faster
+/// when the divisor or the quotient is short.
+unsafe extern "C" fn poly_divrem_op<K: Kernel>(
+    q: *mut c_void,
+    r: *mut c_void,
+    a: *const c_void,
+    la: sys::slong,
+    b: *const c_void,
+    lb: sys::slong,
+    ctx: GrCtx,
+) -> c_int {
+    let c = unsafe { packed::<K>(ctx) }.k.cutoffs();
+    if la >= lb && ((lb as usize) < c.divisor || ((la - lb + 1) as usize) < c.quotient) {
+        return unsafe { sys::_gr_poly_divrem_basecase(q, r, a, la, b, lb, ctx) };
+    }
+    unsafe { sys::_gr_poly_divrem_generic(q, r, a, la, b, lb, ctx) }
 }
 
 unsafe extern "C" fn poly_roots(
@@ -763,6 +841,9 @@ fn methods<K: Kernel>() -> Vec<sys::gr_method_tab_input> {
         m(sys::gr_method_GR_METHOD_FQ_IS_PRIMITIVE, is_primitive as *const ()),
         m(sys::gr_method_GR_METHOD_FQ_PTH_ROOT, pth_root::<K> as *const ()),
         m(sys::gr_method_GR_METHOD_POLY_MULLOW, poly_mullow::<K> as *const ()),
+        m(sys::gr_method_GR_METHOD_POLY_DIVREM, poly_divrem_op::<K> as *const ()),
+        m(sys::gr_method_GR_METHOD_POLY_GCD, poly_gcd_op::<K> as *const ()),
+        m(sys::gr_method_GR_METHOD_POLY_XGCD, poly_xgcd_op::<K> as *const ()),
         m(sys::gr_method_GR_METHOD_POLY_ROOTS, poly_roots as *const ()),
         sys::gr_method_tab_input { index: 0, function: None },
     ]
@@ -1015,13 +1096,18 @@ unsafe fn parts<'a>(ctx: C) -> (&'a Head, GrCtx) {
     (unsafe { head(ctx as GrCtx) }, ctx as GrCtx)
 }
 
-// The polynomial functions of upoly's `FqFns` for packed fields: FLINT's
-// fq_nmod ones on copies over the companion, so that results are those of
-// an fq_nmod field.
+// The polynomial functions of upoly's `FqFns` for packed fields. Division,
+// gcds and powers modulo a polynomial run on the packed field itself, with
+// the methods above, and fall back on fq_nmod should gr give up. The rest
+// are FLINT's fq_nmod ones on copies over the companion, so that
+// factorizations are those of an fq_nmod field.
 
 pub(crate) unsafe extern "C" fn poly_gcd(r: P, a: C, b: C, ctx: C) {
     unsafe {
         let (h, g) = parts(ctx);
+        if sys::gr_poly_gcd(r.cast(), a.cast(), b.cast(), g) == SUCCESS {
+            return;
+        }
         let (x, y, mut t) = (FPoly::of(h, a, g), FPoly::of(h, b, g), FPoly::new(h));
         sys::fq_nmod_poly_gcd(&mut t.p, &x.p, &y.p, t.nctx);
         put_poly(h, &t.p, r, g);
@@ -1031,6 +1117,9 @@ pub(crate) unsafe extern "C" fn poly_gcd(r: P, a: C, b: C, ctx: C) {
 pub(crate) unsafe extern "C" fn poly_xgcd(d: P, s: P, t: P, a: C, b: C, ctx: C) {
     unsafe {
         let (h, g) = parts(ctx);
+        if sys::gr_poly_xgcd(d.cast(), s.cast(), t.cast(), a.cast(), b.cast(), g) == SUCCESS {
+            return;
+        }
         let (x, y) = (FPoly::of(h, a, g), FPoly::of(h, b, g));
         let (mut u, mut v, mut w) = (FPoly::new(h), FPoly::new(h), FPoly::new(h));
         sys::fq_nmod_poly_xgcd(&mut u.p, &mut v.p, &mut w.p, &x.p, &y.p, u.nctx);
@@ -1043,6 +1132,9 @@ pub(crate) unsafe extern "C" fn poly_xgcd(d: P, s: P, t: P, a: C, b: C, ctx: C) 
 pub(crate) unsafe extern "C" fn poly_divrem(q: P, r: P, a: C, b: C, ctx: C) {
     unsafe {
         let (h, g) = parts(ctx);
+        if sys::gr_poly_divrem(q.cast(), r.cast(), a.cast(), b.cast(), g) == SUCCESS {
+            return;
+        }
         let (x, y) = (FPoly::of(h, a, g), FPoly::of(h, b, g));
         let (mut u, mut v) = (FPoly::new(h), FPoly::new(h));
         sys::fq_nmod_poly_divrem(&mut u.p, &mut v.p, &x.p, &y.p, u.nctx);
@@ -1051,9 +1143,28 @@ pub(crate) unsafe extern "C" fn poly_divrem(q: P, r: P, a: C, b: C, ctx: C) {
     }
 }
 
+/// a^e mod f on the packed field, with the inverse of the reversed modulus
+/// found once: gr's plain powmod divides afresh at every step.
+unsafe fn powmod_preinv(r: P, a: C, e: *const sys::fmpz, f: C, g: GrCtx) -> c_int {
+    unsafe {
+        let len = (*(f as *const sys::gr_poly_struct)).length;
+        let mut finv = sys::gr_poly_struct::default();
+        let fi: *mut sys::gr_poly_struct = &mut finv;
+        sys::gr_poly_init(fi, g);
+        let st = sys::gr_poly_reverse(fi, f.cast(), len, g)
+            | sys::gr_poly_inv_series(fi, fi, len, g)
+            | sys::gr_poly_powmod_fmpz_binexp_preinv(r.cast(), a.cast(), e, f.cast(), fi, g);
+        sys::gr_poly_clear(fi, g);
+        st
+    }
+}
+
 pub(crate) unsafe extern "C" fn poly_powmod(r: P, a: C, e: *const sys::fmpz, f: C, ctx: C) {
     unsafe {
         let (h, g) = parts(ctx);
+        if powmod_preinv(r, a, e, f, g) == SUCCESS {
+            return;
+        }
         let (x, m, mut t) = (FPoly::of(h, a, g), FPoly::of(h, f, g), FPoly::new(h));
         sys::fq_nmod_poly_powmod_fmpz_binexp(&mut t.p, &x.p, e, &m.p, t.nctx);
         put_poly(h, &t.p, r, g);
@@ -1352,6 +1463,92 @@ mod tests {
                         }
                         assert!(r1 == r2, "GF({p}^{n}), lengths {la} and {ly}, first {len}");
                     }
+                }
+            }
+        }
+    }
+
+    /// Division, gcds with and without cofactors, and powers modulo a
+    /// polynomial on the packed field (gr's, through the methods here)
+    /// against fq_nmod's on the companion, about the cutoffs of the fast
+    /// algorithms, and gcds with zero and constants.
+    #[test]
+    fn polynomial_division_and_gcds_against_fq_nmod() {
+        let mut rng = Lcg(0x9e37_79b9_7f4a_7c15);
+        for (p, n) in [(2u64, 5usize), (2, 20), (3, 12), (7, 30), (65521, 4)] {
+            let cs: Vec<u64> = if p == 2 {
+                let g = crate::gf2x::least_low_term(n).unwrap();
+                (0..=n).map(|i| if i == n { 1 } else if i < 64 { g >> i & 1 } else { 0 }).collect()
+            } else {
+                odd_modulus(p, n, &mut rng)
+            };
+            let pk = Ctx::packed_field(p, &cs).unwrap();
+            let (px, g) = (Ctx::poly(&pk), pk.ptr());
+            let h = unsafe { head(g) };
+            // A polynomial of length l with a non-zero leading coefficient.
+            let mut poly = |l: usize| {
+                let mut v: Vec<Elem> = (0..l).map(|_| Elem::fq_from_coords_u64(&pk, &(0..n).map(|_| rng.next() % p).collect::<Vec<_>>())).collect();
+                if let Some(x) = v.last_mut().filter(|x| x.is_zero() == Truth::True) {
+                    *x = Elem::one(&pk).unwrap();
+                }
+                Elem::poly_from_coeffs(&px, &v).unwrap()
+            };
+            let fq = |x: &Elem| unsafe { FPoly::of(h, x.as_ptr(), g) };
+            let back = |f: &FPoly| {
+                let mut r = Elem::new(&px);
+                unsafe { put_poly(h, &f.p, r.as_mut_ptr(), g) };
+                r
+            };
+            let same = |x: &Elem, f: &FPoly, what: &str| assert!(x.equal(&back(f)) == Truth::True, "GF({p}^{n}): {what}");
+            let (k, cut) = (if p == 2 { n } else { 1 }, |x: usize, y: usize| if p == 2 { x * n } else { y });
+            // Gcds of polynomials with a common factor, on both sides of the
+            // cutoffs for half-gcd.
+            for (lu, la, lb) in [(1, 30, 20), (20, 50 * k, 40 * k), (30, 70 * k + 5, 60 * k), (40, 100 * k + 10, 90 * k + 5), (50, 130 * k, 120 * k)] {
+                let u = poly(lu);
+                let (a, b) = (u.mul(&poly(la - lu + 1)).unwrap(), u.mul(&poly(lb - lu + 1)).unwrap());
+                let (x, y) = (fq(&a), fq(&b));
+                let r = a.poly_gcd(&b).unwrap();
+                let mut t = FPoly::new(h);
+                unsafe { sys::fq_nmod_poly_gcd(&mut t.p, &x.p, &y.p, t.nctx) };
+                same(&r, &t, &format!("gcd, lengths {la} and {lb}"));
+                let (d, s1, t1) = a.poly_xgcd(&b).unwrap();
+                let (mut e, mut s2, mut t2) = (FPoly::new(h), FPoly::new(h), FPoly::new(h));
+                unsafe { sys::fq_nmod_poly_xgcd(&mut e.p, &mut s2.p, &mut t2.p, &x.p, &y.p, e.nctx) };
+                for (z, f, what) in [(&d, &e, "gcd"), (&s1, &s2, "first cofactor"), (&t1, &t2, "second cofactor")] {
+                    same(z, f, &format!("xgcd {what}, lengths {la} and {lb}"));
+                }
+            }
+            // Gcds with zero and constants.
+            let (zero, one, a) = (Elem::zero(&px), poly(1), poly(9));
+            for (x, y) in [(&zero, &zero), (&zero, &a), (&a, &zero), (&one, &a), (&a, &one)] {
+                let r = x.poly_gcd(y).unwrap();
+                let mut t = FPoly::new(h);
+                unsafe { sys::fq_nmod_poly_gcd(&mut t.p, &fq(x).p, &fq(y).p, t.nctx) };
+                same(&r, &t, &format!("gcd, lengths {} and {}", x.poly_len(), y.poly_len()));
+            }
+            // Division with a short divisor or quotient, or neither.
+            let (dv, qt) = (cut(8, 16), cut(3, 6));
+            let big = 6 * dv;
+            for (la, lb) in [(big, dv - 1), (big, dv + 1), (big, big - qt + 2), (big, big - qt), (2 * dv, dv), (dv, big)] {
+                let (a, b) = (poly(la), poly(lb));
+                let (q, r) = a.poly_divrem(&b).unwrap();
+                let (mut u, mut v) = (FPoly::new(h), FPoly::new(h));
+                unsafe { sys::fq_nmod_poly_divrem(&mut u.p, &mut v.p, &fq(&a).p, &fq(&b).p, u.nctx) };
+                same(&q, &u, &format!("quotient, lengths {la} and {lb}"));
+                same(&r, &v, &format!("remainder, lengths {la} and {lb}"));
+            }
+            // Powers modulo polynomials of a few lengths.
+            let q = Integer::from_u64(p).pow(n as u64);
+            let exps = [Integer::from_u64(0), Integer::from_u64(1), Integer::from_u64(2), Integer::from_u64(1000), q.clone(), &q * &q];
+            for lf in [2, 3, 20, 70] {
+                let f = poly(lf);
+                let a = crate::upoly::divrem(&poly(lf + 5), &f).unwrap().1;
+                for e in &exps {
+                    let mut r = Elem::new(&px);
+                    assert_eq!(unsafe { powmod_preinv(r.as_mut_ptr(), a.as_ptr(), e.as_raw(), f.as_ptr(), g) }, SUCCESS);
+                    let mut t = FPoly::new(h);
+                    unsafe { sys::fq_nmod_poly_powmod_fmpz_binexp(&mut t.p, &fq(&a).p, e.as_raw(), &fq(&f).p, t.nctx) };
+                    same(&r, &t, &format!("power {e:?} modulo a polynomial of length {lf}"));
                 }
             }
         }
