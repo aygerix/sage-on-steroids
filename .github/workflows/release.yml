@@ -31,9 +31,6 @@ jobs:
           - target: linux-x86-64-avx2
             runner: ubuntu-24.04
             flint: linux-x86-64-avx2
-          - target: linux-x86-64-avx512
-            runner: ubuntu-24.04
-            flint: linux-x86-64-avx512
           - target: linux-arm64
             runner: ubuntu-24.04-arm
             flint: linux-arm64
