@@ -117,6 +117,14 @@ impl SparseMatrix {
         }
     }
 
+    fn row_elems(&self, i: usize) -> RResult<Vec<(usize, Elem)>> {
+        match &self.rows {
+            Rows::Integers(rows) => rows[i].iter().map(|(j, x)| Ok((*j, Elem::from_integer(&self.info().ctx, x)?))).collect(),
+            Rows::Words(rows) => Ok(rows[i].iter().map(|(j, x)| (*j, Elem::from_word(&self.info().ctx, *x))).collect()),
+            Rows::Generic(rows) => Ok(rows[i].iter().map(|(j, x)| (*j, x.clone())).collect()),
+        }
+    }
+
     pub fn same_as(&self, other: &SparseMatrix) -> bool {
         if self.nrows != other.nrows || self.ncols != other.ncols || self.ring() != other.ring() {
             return false;
@@ -848,6 +856,7 @@ pub fn binop(it: &mut Interp, op: BinOp, a: &Value, b: &Value) -> RResult<Option
         }
         (Add | Sub, Value::Sparse(x), Value::Sparse(y)) => Ok(Some(add_matrices(it, x, y, op == Sub)?)),
         (Mul, Value::Sparse(x), Value::Sparse(y)) => Ok(Some(multiply_matrices(it, x, y)?)),
+        (Mul, Value::Mat(x), Value::Sparse(y)) => Ok(Some(dense_product(it, x, y, false)?)),
         (Mul, Value::Sparse(x), y) if !matches!(y, Value::Sparse(_) | Value::Mat(_)) => Ok(Some(scale_matrix(it, x, y)?)),
         (Mul, x, Value::Sparse(y)) if !matches!(x, Value::Sparse(_) | Value::Mat(_)) => Ok(Some(scale_matrix(it, y, x)?)),
         (Pow, Value::Sparse(x), Value::Int(n)) => Ok(Some(power(it, x, n)?)),
@@ -858,6 +867,56 @@ pub fn binop(it: &mut Interp, op: BinOp, a: &Value, b: &Value) -> RResult<Option
 fn transpose(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
     let m = sparse_arg(a, 0)?;
     one(transposed(it, &m)?)
+}
+
+fn dense_product(it: &mut Interp, x: &crate::intrinsics::matrices::Mtrx, y: &SparseMatrix, transpose: bool) -> RResult<Value> {
+    if x.ring() != y.ring() {
+        return Err(RuntimeError::runtime("Arguments have incompatible coefficient rings"));
+    }
+    let expected = if transpose { y.ncols } else { y.nrows };
+    if x.m.ncols() != expected {
+        return Err(RuntimeError::runtime("Arguments have incompatible degrees"));
+    }
+    let cols = if transpose { y.nrows } else { y.ncols };
+    let mut out = Mat::zero(x.m.ctx(), x.m.nrows(), cols);
+    let gr = |e| crate::rings::gr_error(e, "Multiplication failed");
+    if transpose {
+        for r in 0..x.m.nrows() {
+            for i in 0..y.nrows {
+                let mut sum = Elem::zero(x.m.ctx());
+                for (k, a) in y.row_elems(i)? {
+                    if !x.m.entry_is_zero(r, k) {
+                        sum = sum.add(&x.m.entry(r, k).mul(&a).map_err(gr)?).map_err(gr)?;
+                    }
+                }
+                out.set_entry(r, i, &sum);
+            }
+        }
+    } else {
+        for r in 0..x.m.nrows() {
+            for k in 0..y.nrows {
+                if x.m.entry_is_zero(r, k) {
+                    continue;
+                }
+                let a = x.m.entry(r, k);
+                for (j, b) in y.row_elems(k)? {
+                    let sum = out.entry(r, j).add(&a.mul(&b).map_err(gr)?).map_err(gr)?;
+                    out.set_entry(r, j, &sum);
+                }
+            }
+        }
+    }
+    if x.is_vector() {
+        crate::intrinsics::matrices::vec_value(it, x.ring(), out)
+    } else {
+        crate::intrinsics::matrices::mat_value(it, x.ring(), out)
+    }
+}
+
+fn multiply_by_transpose(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let Value::Mat(x) = &a.args[0] else { return Err(bad()) };
+    let y = sparse_arg(a, 1)?;
+    one(dense_product(it, x, &y, true)?)
 }
 
 fn set_entry_proc(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
@@ -1336,4 +1395,6 @@ pub fn register(it: &mut Interp) {
     it.def("IsUpperTriangular", "A::MtrxSprs -> BoolElt", "Whether A is upper triangular.", is_upper);
     it.def("IsLowerTriangular", "A::MtrxSprs -> BoolElt", "Whether A is lower triangular.", is_lower);
     it.def("Transpose", "A::MtrxSprs -> MtrxSprs", "The transpose of A.", transpose);
+    it.def("MultiplyByTranspose", "v::ModTupRngElt, A::MtrxSprs -> ModTupRngElt", "v times the transpose of A.", multiply_by_transpose);
+    it.def("MultiplyByTranspose", "V::Mtrx, A::MtrxSprs -> Mtrx", "V times the transpose of A.", multiply_by_transpose);
 }
