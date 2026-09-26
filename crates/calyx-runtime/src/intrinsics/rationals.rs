@@ -199,6 +199,76 @@ fn automorphism_group(it: &mut Interp, _a: &mut CallArgs) -> RResult<Vals> {
     Ok(vals![Value::Struct(g), p, f])
 }
 
+/// The map from Q to Q as an algebra or a vector space of dimension 1 over
+/// itself, and back. Magma's handbook calls it the map from the algebra or
+/// space to Q, but Magma 2.22 gives it the other way round.
+struct OverItself;
+
+impl NativeMap for OverItself {
+    fn apply(&self, it: &mut Interp, m: &MapObj, x: &Value) -> RResult<Value> {
+        let Ok(q) = it.try_coerce(&Value::rationals(), x)? else {
+            return Err(RuntimeError::runtime("Element is not in the domain of the map").in_context("map application"));
+        };
+        match &m.codomain {
+            Value::Struct(st) if matches!(st.kind, StructKind::Matrices(_)) => {
+                let mut v = calyx_flint::mat::Mat::zero(&super::matrices::entry_ctx(it, &Value::rationals())?, 1, 1);
+                super::matrices::set_entry(it, &Value::rationals(), &mut v, 0, 0, &q)?;
+                super::matrices::vec_value(it, &Value::rationals(), v)
+            }
+            s => it.coerce(s, &q),
+        }
+    }
+
+    fn preimage(&self, it: &mut Interp, m: &MapObj, y: &Value) -> RResult<Value> {
+        let not_in = || RuntimeError::runtime("Element is not in the codomain of the map").in_context("@@");
+        match (y, &m.codomain) {
+            (Value::Mat(_), Value::Struct(st)) if matches!(st.kind, StructKind::Matrices(_)) => match it.try_coerce(&m.codomain, y)? {
+                Ok(Value::Mat(v)) => Ok(super::matrices::entry_value(it, &v, 0, 0)),
+                _ => Err(not_in()),
+            },
+            (_, Value::Struct(st)) if matches!(st.kind, StructKind::AlgAss(_)) => match it.try_coerce(&m.codomain, y)? {
+                Ok(a) => it.coerce(&Value::rationals(), &a),
+                Err(_) => Err(not_in()),
+            },
+            _ => Err(not_in()),
+        }
+    }
+
+    fn rule_with_inverse(&self) -> bool {
+        true
+    }
+}
+
+/// The error for a second argument other than Q.
+fn check_subfield(a: &CallArgs) -> RResult<()> {
+    if a.args[1].is_rationals() {
+        return Ok(());
+    }
+    Err(super::bare(RuntimeError::runtime("Argument 2 must be a subfield of argument 1")))
+}
+
+/// `Algebra(Q, Q)`: Q as an associative algebra of dimension 1 over itself,
+/// with the map from Q.
+fn algebra(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    check_subfield(a)?;
+    let q = Value::rationals();
+    let ctx = super::matrices::entry_ctx(it, &q)?;
+    let e = calyx_flint::mat::Mat::identity(&ctx, 1)?;
+    let alg = Value::Struct(super::algass::new(it, &q, vec![e.clone()], e)?);
+    let map = MapObj { kind: MapKind::Map, domain: q, codomain: alg.clone(), imp: MapImpl::Native(Rc::new(OverItself)) };
+    Ok(vals![alg, Value::Map(Rc::new(map))])
+}
+
+/// `VectorSpace(Q, Q)`: Q as a vector space of dimension 1 over itself,
+/// with the map from Q.
+fn vector_space(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    check_subfield(a)?;
+    let q = Value::rationals();
+    let v = Value::Struct(super::matrices::parent(it, &q, 1, 1, super::matrices::Shape::Tuples)?);
+    let map = MapObj { kind: MapKind::Map, domain: q, codomain: v.clone(), imp: MapImpl::Native(Rc::new(OverItself)) };
+    Ok(vals![v, Value::Map(Rc::new(map))])
+}
+
 /// `hom< Q -> R | >`: r/s goes to r * s^-1 in R, where that makes sense.
 struct RationalHom;
 
@@ -434,6 +504,33 @@ fn rational_reconstruction_intr(_it: &mut Interp, a: &mut CallArgs) -> RResult<V
     })
 }
 
+/// The rational reconstruction of every entry of a matrix or vector over a
+/// prime field, or false if one has none.
+fn rational_reconstruction_mat(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    use super::matrices::{entry_ctx, entry_value, mat_value, set_entry, vec_value};
+    let Value::Mat(m) = a.args[0].clone() else { unreachable!("a matrix") };
+    let not_finite = || RuntimeError::runtime("Coefficient ring of argument 1 is not a finite field");
+    let p = match m.ring().as_struct() {
+        Some(StructKind::Ring(r)) => match r.finite_field() {
+            Some(f) if f.degree == 1 => f.p.clone(),
+            Some(_) => return Err(RuntimeError::runtime("Coefficient field must be prime")),
+            None => return Err(not_finite()),
+        },
+        _ => return Err(not_finite()),
+    };
+    let q = Value::rationals();
+    let mut out = calyx_flint::mat::Mat::zero(&entry_ctx(it, &q)?, m.m.nrows(), m.m.ncols());
+    for i in 0..m.m.nrows() {
+        for j in 0..m.m.ncols() {
+            let s = crate::rings::small::elt_of(&entry_value(it, &m, i, j)).and_then(|e| e.residue()).unwrap_or_default();
+            let Some(r) = rational_reconstruction(&s, &p) else { return Ok(vals![Value::Bool(false), Value::Undef]) };
+            set_entry(it, &q, &mut out, i, j, &Value::rat(r))?;
+        }
+    }
+    let r = if m.is_vector() { vec_value(it, &q, out)? } else { mat_value(it, &q, out)? };
+    Ok(vals![Value::Bool(true), r])
+}
+
 /// The valuation of x at the prime p, and x / p^v when asked for (or
 /// always, with `both`).
 fn valuation_at(a: &CallArgs, p: &Integer, both: bool) -> RResult<Vals> {
@@ -492,6 +589,8 @@ pub fn register(it: &mut Interp) {
     it.def("ClassGroup", "Q::FldRat -> GrpAb, Map", "The trivial class group of Z, with the map onto its ideals.", class_group);
     it.def("AutomorphismGroup", "Q::FldRat -> GrpPerm, PowMapAut, Map", "The trivial group of automorphisms of Q, their parent and the map onto them.", automorphism_group);
     it.def("AutomorphismGroup", "Q::FldRat, R::FldRat -> GrpPerm, PowMapAut, Map", "The trivial group of automorphisms of Q, their parent and the map onto them.", automorphism_group);
+    it.def("Algebra", "Q::FldRat, K::Fld -> AlgAss, Map", "Q as an associative algebra over itself (K = Q), with the map from Q.", algebra);
+    it.def("VectorSpace", "Q::FldRat, K::Fld -> ModTupFld, Map", "Q as a vector space over itself (K = Q), with the map from Q.", vector_space);
     it.def("Decomposition", "Q::FldRat, p::RngIntElt -> []", "The decomposition [ <p, 1> ] of the prime p in Q.", decomposition);
     it.def("Decomposition", "Q::FldRat, p::Infty -> []", "The decomposition [ <Infinity, 1> ] of the infinite prime in Q.", decomposition);
     for name in ["Conductor", "Degree", "AbsoluteDegree", "Discriminant", "AbsoluteDiscriminant"] {
@@ -544,6 +643,12 @@ pub fn register(it: &mut Interp) {
         "s::FldFinElt -> BoolElt, FldRatElt",
         "Whether some n/d with |n|, d <= Sqrt(p/2) is congruent to s modulo p, and that rational.",
         rational_reconstruction_intr,
+    );
+    it.def(
+        "RationalReconstruction",
+        "M::Mtrx -> BoolElt, Mtrx",
+        "Whether every entry of M, over a prime field, has a rational reconstruction, and the matrix of them.",
+        rational_reconstruction_mat,
     );
     it.def("Valuation", "x::FldRatElt, p::RngIntElt -> RngIntElt, FldRatElt", "The valuation v of x at the prime p, and x/p^v.", valuation);
     it.def("Valuation", "x::FldRatElt, I::RngInt -> RngIntElt, FldRatElt", "The valuation v of x at the prime ideal I = pZ, and x/p^v.", valuation_ideal);

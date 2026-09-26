@@ -1,0 +1,204 @@
+Associative Algebra of dimension 1 with base ring Rational Field
+Mapping from: FldRat: Q to AlgAss: A given by a rule
+AlgAss
+Map
+Rational Field
+Associative Algebra of dimension 1 with base ring Rational Field
+1
+Rational Field
+Rational Field
+true
+true
+(1)
+(1)
+(0)
+[ (1) ]
+
+>> A.2;
+    ^
+Runtime error in '.': Argument 2 (2) should be in the range [1 .. 1]
+
+
+>> A.0;
+    ^
+Runtime error in '.': Argument 2 (0) should be in the range [1 .. 1]
+
+(3/4)
+AlgAssElt
+(2)
+(1/3)
+(5)
+
+>> A![1, 2];
+    ^
+Runtime error in '!': Sequence argument length (2) should be 1 to be coerced 
+into a matrix or vector
+
+
+>> A![];
+    ^
+Runtime error in '!': Sequence argument length (0) should be 1 to be coerced 
+into a matrix or vector
+
+(2)
+(2)
+(2/3)
+(2)
+(2)
+(-1)
+(0)
+(1)
+(1)
+(1)
+(1/2)
+true
+true
+
+>> x/0;
+    ^
+Runtime error in '/': Argument 2 is not a unit
+
+
+>> (0*x)^-1;
+        ^
+Runtime error in '^': Illegal negative power of zero element
+
+true
+true
+true
+(1/2)
+AlgAssElt
+(3)
+(1)
+(3)
+(1/2)
+(3/4)
+1
+FldRatElt
+2
+5/7
+FldRatElt
+1
+1/3
+4
+
+>> A eq B;
+     ^
+Runtime error in 'eq': Arguments have no covering structure
+
+
+>> B.1 eq x;
+       ^
+Runtime error in 'eq': Arguments are not compatible
+Argument types given: AlgAssElt[FldRat], AlgAssElt[FldRat]
+
+
+>> B.1 + x;
+       ^
+Runtime error in '+': Arguments are not compatible
+Argument types given: AlgAssElt[FldRat], AlgAssElt[FldRat]
+
+
+>> A.1 * B.1;
+       ^
+Runtime error in '*': Arguments have no covering structure
+
+
+>> Algebra(Q, GF(5));
+          ^
+Runtime error: Argument 2 must be a subfield of argument 1
+
+
+>> Algebra(Q, Integers());
+          ^
+Runtime error in 'Algebra': Bad argument types
+Argument types given: FldRat, RngInt
+
+
+>> Algebra(Q, RealField());
+          ^
+Runtime error: Argument 2 must be a subfield of argument 1
+
+Full Vector space of degree 1 over Rational Field
+Mapping from: FldRat: Q to ModTupFld: V given by a rule
+ModTupFld
+Map
+Rational Field
+Full Vector space of degree 1 over Rational Field
+1
+[
+    (1)
+]
+true
+(1/2)
+ModTupFldElt
+(3)
+1
+FldRatElt
+2/3
+
+>> g(v);
+    ^
+Runtime error in map application: Element is not in the domain of the map
+
+
+>> g(V![2/3]);
+    ^
+Runtime error in map application: Element is not in the domain of the map
+
+
+>> (5/7) @@ g;
+         ^
+Runtime error in '@@': Element is not in the codomain of the map
+
+
+>> VectorSpace(Q, GF(5));
+              ^
+Runtime error: Argument 2 must be a subfield of argument 1
+
+[  1  51]
+[ 34   3]
+true 
+[  1 1/2]
+[1/3   3]
+true
+[  1 1/2]
+[1/3   3]
+AlgMatElt
+Full Matrix Algebra of degree 2 over Rational Field
+true
+[   0    1   -1]
+[-1/2  1/2    7]
+false
+false
+true 
+Matrix with 0 rows and 0 columns
+true 
+[0 0]
+[0 0]
+true 
+[1]
+true (  1 1/2)
+
+>> RationalReconstruction(Matrix(GF(9), 1, 1, [1]));
+                         ^
+Runtime error in 'RationalReconstruction': Coefficient field must be prime
+
+
+>> RationalReconstruction(Matrix(Integers(101), 1, 1, [51]));
+                         ^
+Runtime error in 'RationalReconstruction': Coefficient ring of argument 1 is not
+a finite field
+
+
+>> RationalReconstruction(Matrix(Integers(), 1, 1, [51]));
+                         ^
+Runtime error in 'RationalReconstruction': Coefficient ring of argument 1 is not
+a finite field
+
+
+>> RationalReconstruction(Matrix(F, 2, 2, [1, 51, 34, 3]) : Denominator := 5);
+                         ^
+Runtime error in 'RationalReconstruction': No parameters are possible
+Argument types given: AlgMatElt[FldFin]
+
