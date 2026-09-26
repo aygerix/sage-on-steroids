@@ -790,6 +790,24 @@ impl<T: Lane, const N: usize> FpLanes<T, N> {
         }
     }
 
+    /// The element c_0 + c_1 x + ... modulo f, for at most 2n - 1
+    /// coefficients c_i below p (a product, as Kronecker substitution finds
+    /// it).
+    pub fn reduce_coeffs(&self, c: &[u64]) -> [T; N] {
+        fn spread<C: Chunk, const N: usize>(c: &[u64]) -> [[C::A; 2]; N] {
+            let mut acc = [[C::A::default(); 2]; N];
+            for (x, &y) in acc.as_flattened_mut().iter_mut().zip(c) {
+                *x = C::A::of(y as u32);
+            }
+            acc
+        }
+        match &self.rows {
+            Rows::W16(t) => self.reduce::<C16>(&spread::<C16, N>(c), &t.red),
+            Rows::W32(t) => self.reduce::<C32>(&spread::<C32, N>(c), &t.red),
+            Rows::W64(t) => self.reduce::<C64>(&spread::<C64, N>(c), &t.red),
+        }
+    }
+
     /// u_i + t v_(i-j) modulo p for i from j to top, over whole aligned
     /// chunks (the other lanes add zeros: v is 0 above its degree and PAD
     /// zeros lead it). The sums stay below p^2.

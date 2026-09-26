@@ -721,6 +721,17 @@ impl<const W: usize> Gf2Words<W> {
         words_dispatch!(self.sqr_with(a: &[u64; W]) -> [u64; W])
     }
 
+    /// The element c_0 + c_1 x + ... modulo f, for at most 2n - 1 bits c_i
+    /// (a product, as Kronecker substitution finds it).
+    pub fn reduce_coeffs(&self, c: &[u64]) -> [u64; W] {
+        let mut bits = [0u64; PRODUCT];
+        for (i, &x) in c.iter().enumerate() {
+            bits[i / 64] |= (x & 1) << (i % 64);
+        }
+        let p = &bits;
+        words_dispatch!(self.reduce(p: &[u64; PRODUCT]) -> [u64; W])
+    }
+
     /// a^e for the exponent with the given words (least significant first).
     pub fn pow(&self, a: &[u64; W], e: &[u64]) -> [u64; W] {
         words_dispatch!(self.pow_with(a: &[u64; W], e: &[u64]) -> [u64; W])
