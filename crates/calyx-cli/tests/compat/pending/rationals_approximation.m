@@ -4,7 +4,7 @@
 // documents; they are tested only on expansions that the forward functions
 // return, where the handbook fixes the value. Qround with ContFrac and a
 // negative bound fails inside Magma's package code, so it is not tested.
-// RationalReconstruction of a matrix waits for matrices.
+// RationalReconstruction of a matrix is tested in rationals_linear.m.
 Q := Rationals();
 
 // Qround: by default Ceiling(q*M)/M, with ContFrac a convergent
