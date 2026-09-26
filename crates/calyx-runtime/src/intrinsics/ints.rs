@@ -159,18 +159,28 @@ fn is_divisible_by(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
     Ok(vals![Value::Bool(yes), if yes { Value::Int(n.divexact(d)) } else { Value::Undef }])
 }
 
+/// Argument 2 as a shift: small (below 2^30 in absolute value, whatever the
+/// number shifted) and non-negative, as Magma requires.
+fn shift_arg(a: &CallArgs) -> RResult<u64> {
+    let b = a.int(1)?;
+    if b.abs() >= Integer::from_u64(1 << 30) {
+        return Err(RuntimeError::runtime(format!("Argument 2 ({b}) is too large")));
+    }
+    a.small_ge(1, 0)
+}
+
 fn shift_left(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
-    let b = a.small_ge(1, 0)?;
+    let b = shift_arg(a)?;
     intv(a.int(0)?.mul_2exp(b))
 }
 
 fn shift_right(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
-    let b = a.small_ge(1, 0)?;
+    let b = shift_arg(a)?;
     intv(a.int(0)?.fdiv_2exp(b))
 }
 
 fn mod_by_power_of_2(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
-    let b = a.small_ge(1, 0)?;
+    let b = shift_arg(a)?;
     let n = a.int(0)?;
     intv(n - &n.fdiv_2exp(b).mul_2exp(b))
 }

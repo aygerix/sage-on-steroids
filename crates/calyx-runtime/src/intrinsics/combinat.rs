@@ -75,47 +75,119 @@ fn is_factorial(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
     }
 }
 
-/// The partitions of `n` into parts from `parts` (decreasing), each with
-/// its parts in decreasing order, in reverse lexicographic order. `k`
-/// restricts the number of parts.
-fn partitions_of(n: u64, parts: &[u64], k: Option<u64>) -> Vec<Vec<u64>> {
-    fn go(n: u64, parts: &[u64], k: Option<u64>, cur: &mut Vec<u64>, out: &mut Vec<Vec<u64>>) {
-        if n == 0 {
-            if k.is_none_or(|k| cur.len() as u64 == k) {
-                out.push(cur.clone());
-            }
-            return;
-        }
-        if k.is_some_and(|k| cur.len() as u64 >= k) {
-            return;
-        }
-        for (i, &p) in parts.iter().enumerate() {
-            if p <= n {
-                cur.push(p);
-                go(n - p, &parts[i..], k, cur, out);
-                cur.pop();
-            }
-        }
+/// The most integers that a list of partitions may hold, their parts and
+/// one for each: about 2.5 GB, which Partitions(74) nears.
+const MOST_PARTS: u64 = 1 << 27;
+
+/// Calls `f` with the partitions of `n` into parts from `parts` (decreasing),
+/// each with its parts in decreasing order, in reverse lexicographic order.
+/// `k` restricts the number of parts. False, having stopped, if they would
+/// hold more than MOST_PARTS integers.
+fn each_partition(n: u64, parts: &[u64], k: Option<u64>, f: &mut dyn FnMut(&[u64])) -> bool {
+    // g[j] is the gcd of parts[j..], which divides whatever they add up to.
+    let mut g = vec![0; parts.len() + 1];
+    for j in (0..parts.len()).rev() {
+        g[j] = gcd(parts[j], g[j + 1]);
     }
-    let mut out = Vec::new();
-    go(n, parts, k, &mut Vec::new(), &mut out);
-    out
+    let least = parts.last().copied().unwrap_or(0);
+    let mut held = 0u64;
+    // A depth-first search without recursion, as a partition may have n
+    // parts: cur holds the parts so far, at[i] the index of cur[i] in parts,
+    // and the next part comes from parts[from..].
+    let (mut cur, mut at, mut rest, mut from) = (Vec::new(), Vec::<u32>::new(), n, 0);
+    loop {
+        let len = cur.len() as u64;
+        let next = match k {
+            _ if rest == 0 => None,
+            Some(k) if len == k => None,
+            _ => {
+                // With k parts, the parts left must make up the rest: none
+                // may be above what the least ones leave, nor all below the
+                // rest's share.
+                let left = k.map_or(0, |k| k - len);
+                let top = if k.is_some() { rest.checked_sub((left - 1) * least) } else { Some(rest) };
+                top.and_then(|top| {
+                    let first = from + parts[from..].partition_point(|&p| p > top);
+                    (first..parts.len()).take_while(|&j| k.is_none() || parts[j] * left >= rest).find(|&j| (rest - parts[j]) % g[j] == 0)
+                })
+            }
+        };
+        if let Some(j) = next {
+            if len >= MOST_PARTS {
+                return false;
+            }
+            cur.push(parts[j]);
+            at.push(j as u32);
+            rest -= parts[j];
+            from = j;
+            continue;
+        }
+        if rest == 0 && k.is_none_or(|k| len == k) {
+            held += len + 1;
+            if held > MOST_PARTS {
+                return false;
+            }
+            f(&cur);
+        }
+        let Some(j) = at.pop() else { break };
+        rest += cur.pop().unwrap_or(0);
+        from = j as usize + 1;
+    }
+    true
 }
 
-fn partitions_value(ps: Vec<Vec<u64>>) -> Value {
-    let inner = Value::structure(StructKind::PowerSeq(Some(Value::integers())));
-    let elems = ps.into_iter().map(|p| Value::int_seq(p.into_iter().map(Integer::from_u64))).collect();
-    Value::seq(Some(inner), elems)
+fn gcd(mut a: u64, mut b: u64) -> u64 {
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    a
+}
+
+/// The partitions as Magma gives them (`count` of them, if known), or
+/// Magma's error for an n that is too large when they would hold more than
+/// MOST_PARTS integers.
+fn partitions_value(n: &Integer, parts: &[u64], k: Option<u64>, count: usize) -> RResult<Vals> {
+    let mut elems = Vec::with_capacity(count);
+    let small = n.to_u64().filter(|&m| m < 1 << 30).ok_or_else(|| too_large(n))?;
+    let mut push = |p: &[u64]| elems.push(Value::int_seq(p.iter().map(|&x| Integer::from_u64(x))));
+    // A partition has at least n/max(parts) parts.
+    if parts.first().is_some_and(|&p| small / p >= MOST_PARTS) || !each_partition(small, parts, k, &mut push) {
+        return Err(too_large(n));
+    }
+    one(Value::seq(Some(Value::structure(StructKind::PowerSeq(Some(Value::integers())))), elems))
+}
+
+fn too_large(n: &Integer) -> RuntimeError {
+    RuntimeError::runtime(format!("Argument 1 ({n}) is too large"))
+}
+
+/// The number of partitions of n, and the integers they hold, their parts
+/// and one for each (for n up to 350, where it fits): the parts k number
+/// p(n - k) + p(n - 2k) + ....
+fn partitions_size(n: usize) -> (u64, u64) {
+    let mut p = vec![0u64; n + 1];
+    p[0] = 1;
+    for k in 1..=n {
+        for i in k..=n {
+            p[i] += p[i - k];
+        }
+    }
+    (p[n], p[n] + (1..=n).map(|k| (1..=n / k).map(|j| p[n - j * k]).sum::<u64>()).sum::<u64>())
 }
 
 fn partitions(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
-    let n = a.int(0)?;
+    let n = a.int(0)?.clone();
     if n.sign() < 0 {
         return Err(arg_not(1, "non-negative"));
     }
-    let n = n.to_u64().filter(|&n| n <= 1000).ok_or_else(|| RuntimeError::runtime("Argument 1 is too large"))?;
-    let parts: Vec<u64> = (1..=n).rev().collect();
-    one(partitions_value(partitions_of(n, &parts, None)))
+    // Refused at once when too many.
+    let m = n.to_u64().filter(|&m| m < 200).ok_or_else(|| too_large(&n))?;
+    let (count, size) = partitions_size(m as usize);
+    if size > MOST_PARTS {
+        return Err(too_large(&n));
+    }
+    let parts: Vec<u64> = (1..=m).rev().collect();
+    partitions_value(&n, &parts, None, count as usize)
 }
 
 fn number_of_partitions(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
@@ -124,19 +196,28 @@ fn number_of_partitions(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
 }
 
 fn restricted_partitions(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
-    let n = a.int(0)?;
+    let n = a.int(0)?.clone();
     if n.sign() < 0 {
         return Err(arg_not(1, "positive"));
     }
-    let n = n.to_u64().ok_or_else(|| RuntimeError::runtime("Argument 1 is too large"))?;
-    let (k, set) = if a.args.len() == 3 { (Some(a.small_ge(1, 0)?), &a.args[2]) } else { (None, &a.args[1]) };
+    if n >= Integer::from_u64(1 << 30) {
+        return Err(too_large(&n));
+    }
+    let k = match a.args.len() {
+        3 => {
+            let k = a.int(1)?;
+            let bad = || RuntimeError::runtime(format!("Argument 2 ({k}) is not small and non-negative"));
+            Some(k.to_u64().filter(|&k| k < 1 << 30).ok_or_else(bad)?)
+        }
+        _ => None,
+    };
     let bad = || RuntimeError::runtime("Set elements must be positive single integers");
     let mut parts = Vec::new();
-    for m in super::ints::ints_of(set)? {
+    for m in super::ints::ints_of(&a.args[a.args.len() - 1])? {
         parts.push(m.to_u64().filter(|&m| m > 0 && m < 1 << 30).ok_or_else(bad)?);
     }
     parts.sort_by(|a, b| b.cmp(a));
-    one(partitions_value(partitions_of(n, &parts, k)))
+    partitions_value(&n, &parts, k, 0)
 }
 
 fn stirling_first(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
@@ -213,6 +294,26 @@ pub fn register(it: &mut Interp) {
 mod tests {
     use super::*;
 
+    fn partitions_of(n: u64, parts: &[u64], k: Option<u64>) -> Vec<Vec<u64>> {
+        let mut out = Vec::new();
+        assert!(each_partition(n, parts, k, &mut |p| out.push(p.to_vec())));
+        out
+    }
+
+    /// The partitions by plain recursion, in the same order.
+    fn reference(n: u64, parts: &[u64], k: Option<u64>, cur: &mut Vec<u64>, out: &mut Vec<Vec<u64>>) {
+        if n == 0 && k.is_none_or(|k| cur.len() as u64 == k) {
+            out.push(cur.clone());
+        }
+        for (i, &p) in parts.iter().enumerate() {
+            if p <= n && k.is_none_or(|k| (cur.len() as u64) < k) {
+                cur.push(p);
+                reference(n - p, &parts[i..], k, cur, out);
+                cur.pop();
+            }
+        }
+    }
+
     #[test]
     fn partitions_are_complete_and_ordered() {
         for n in 0..=25u64 {
@@ -221,8 +322,9 @@ mod tests {
             assert_eq!(Integer::from_u64(ps.len() as u64), Integer::partitions(n), "#Partitions({n})");
             assert!(ps.iter().all(|p| p.iter().sum::<u64>() == n && p.windows(2).all(|w| w[0] >= w[1])), "Partitions({n})");
             assert!(ps.windows(2).all(|w| w[0] > w[1]), "Partitions({n}) in reverse lexicographic order");
-            for k in 0..=n {
-                assert_eq!(partitions_of(n, &parts, Some(k)).len(), ps.iter().filter(|p| p.len() as u64 == k).count(), "Partitions({n}, {k})");
+            for k in 0..=n + 1 {
+                let want: Vec<Vec<u64>> = ps.iter().filter(|p| p.len() as u64 == k).cloned().collect();
+                assert_eq!(partitions_of(n, &parts, Some(k)), want, "Partitions({n}, {k})");
             }
         }
         // Parts from a set: the coefficients of 1/((1 - x^7)(1 - x^5)(1 - x^3)).
@@ -237,6 +339,22 @@ mod tests {
         for n in 0..=60 {
             assert_eq!(partitions_of(n, &parts, None).len(), ways[n as usize], "RestrictedPartitions({n}, {{3, 5, 7}})");
         }
+        // Sets whose parts share factors, with and without the number of parts.
+        for parts in [vec![15u64, 10, 6], vec![6, 4], vec![9, 4, 1], vec![2], vec![]] {
+            for n in 0..=40 {
+                for k in [None, Some(0), Some(1), Some(2), Some(3), Some(5), Some(8)] {
+                    let mut want = Vec::new();
+                    reference(n, &parts, k, &mut Vec::new(), &mut want);
+                    assert_eq!(partitions_of(n, &parts, k), want, "RestrictedPartitions({n}, {k:?}, {parts:?})");
+                }
+            }
+        }
+        // A partition may have more parts than recursion could take.
+        assert_eq!(partitions_of(1_000_000, &[1], None).iter().map(Vec::len).collect::<Vec<_>>(), [1_000_000]);
+        assert_eq!(partitions_of(1_000_000, &[3, 2], Some(10)), Vec::<Vec<u64>>::new());
+        // The sizes of the lists of partitions: Partitions(74) is the last to fit.
+        assert_eq!(partitions_size(60), (966467, 15959618));
+        assert!(partitions_size(74).1 <= MOST_PARTS && partitions_size(75).1 > MOST_PARTS);
     }
 
     #[test]
