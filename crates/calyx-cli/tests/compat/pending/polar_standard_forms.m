@@ -15,8 +15,23 @@ QR;
 
 // The remaining constructors, including the field involution.
 StandardPseudoAlternatingForm(3, GF(2));
+StandardPseudoAlternatingForm(5, GF(4));
 H, sigma := StandardHermitianForm(3, 3);
 H;
 sigma(GF(9).1) eq GF(9).1^3;
 StandardQuadraticForm(3, GF(5) : Minus);
+StandardQuadraticForm(3, GF(7) : Minus);
+StandardQuadraticForm(4, GF(9) : Minus, Variant := "Revised");
+StandardQuadraticForm(6, GF(5) : Minus, Variant := "Revised");
 StandardSymmetricForm(4, GF(5) : Minus);
+
+try
+    StandardQuadraticForm(3, GF(4) : Minus);
+catch e
+    e`Object;
+end try;
+try
+    StandardQuadraticForm(3, GF(5) : Variant := "Bad");
+catch e
+    e`Object;
+end try;
