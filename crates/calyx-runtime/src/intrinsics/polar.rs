@@ -12,7 +12,6 @@ use super::one;
 use crate::error::{RResult, RuntimeError};
 use crate::interp::{CallArgs, Interp};
 use crate::intrinsics::matrices::{MatParent, Mtrx, Shape, Sub};
-use crate::rings::finite::field_struct;
 use crate::rings::props::ring_props;
 use crate::sym::Sym;
 use crate::value::*;
@@ -305,15 +304,15 @@ fn standard_pseudo_alternating(it: &mut Interp, a: &mut CallArgs) -> RResult<Val
     let ctx = crate::intrinsics::matrices::entry_ctx(it, &ring)?;
     let mut m = Mat::zero(&ctx, n, n);
     let one_ = Elem::one(&ctx).map_err(gr)?;
-    let pairs = n / 2;
-    for i in 0..pairs {
-        let (j, k) = (2 * i, 2 * i + 1);
-        m.set_entry(j, k, &one_);
-        m.set_entry(k, j, &one_);
+    let alternating = if n % 2 == 0 { n.saturating_sub(2) } else { n.saturating_sub(1) };
+    for i in 0..alternating {
+        m.set_entry(i, alternating - 1 - i, &one_);
     }
     if n % 2 == 1 {
         m.set_entry(n - 1, n - 1, &one_);
     } else if n != 0 {
+        m.set_entry(n - 2, n - 1, &one_);
+        m.set_entry(n - 1, n - 2, &one_);
         m.set_entry(n - 1, n - 1, &one_);
     }
     one(matrix(it, &ring, m)?)
@@ -380,38 +379,26 @@ fn standard_hermitian(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
     Ok(vals![form, map])
 }
 
-fn primitive(it: &mut Interp, ring: &Value) -> RResult<Elem> {
-    let st = field_struct(ring).ok_or_else(bad)?;
-    it.ff_primitive(st)
-}
-
-/// A coefficient c for which x^2 + x + c is irreducible.  In odd
-/// characteristic this tests a bounded sequence of powers of a primitive
-/// element; in characteristic two a normal element has absolute trace one.
-fn anisotropic_coefficient(it: &mut Interp, ring: &Value, p: &Integer) -> RResult<Elem> {
+/// If x^2 + b*x + c is the standard primitive quadratic polynomial over
+/// K, return b, c and its discriminant b^2 - 4c.  The latter is the
+/// canonical negative nonsquare used by the Revised form in odd
+/// characteristic.
+fn primitive_plane(it: &mut Interp, ring: &Value) -> RResult<(Elem, Elem, Elem)> {
+    let f = it.call_intrinsic_named(Sym::new("PrimitivePolynomial"), vec![ring.clone(), Value::int(2)])?;
+    let b = it.call_intrinsic_named(Sym::new("Coefficient"), vec![f.clone(), Value::int(1)])?;
+    let c = it.call_intrinsic_named(Sym::new("Coefficient"), vec![f, Value::int(0)])?;
+    let b = it.to_structure_elem(ring, &b, false)?.ok_or_else(bad)?;
+    let c = it.to_structure_elem(ring, &c, false)?.ok_or_else(bad)?;
     let ctx = crate::intrinsics::matrices::entry_ctx(it, ring)?;
-    if p == &Integer::from_u64(2) {
-        let x = it.call_intrinsic_named(Sym::new("NormalElement"), vec![ring.clone()])?;
-        return it.to_structure_elem(ring, &x, false)?.ok_or_else(bad);
-    }
-    let one = Elem::one(&ctx).map_err(gr)?;
     let four = Elem::from_integer(&ctx, &Integer::from_u64(4)).map_err(gr)?;
-    let g = primitive(it, ring)?;
-    let mut c = one.clone();
-    for _ in 0..64 {
-        let disc = one.sub(&four.mul(&c).map_err(gr)?).map_err(gr)?;
-        if disc.is_square() == Truth::False {
-            return Ok(c);
-        }
-        c = c.mul(&g).map_err(gr)?;
-    }
-    Err(RuntimeError::runtime("Could not construct an anisotropic plane"))
+    let disc = b.sqr().map_err(gr)?.sub(&four.mul(&c).map_err(gr)?).map_err(gr)?;
+    Ok((b, c, disc))
 }
 
 fn variant(a: &CallArgs) -> RResult<&str> {
     match a.param("Variant") {
         Some(Value::Str(s)) if s.as_str() == "Default" || s.as_str() == "Revised" => Ok(s.as_str()),
-        Some(Value::Str(s)) => Err(RuntimeError::runtime(format!("Unknown form variant '{s}'"))),
+        Some(Value::Str(s)) => Err(super::bare(RuntimeError::runtime(format!("unsupported variant -> {s}")))),
         _ => Err(RuntimeError::runtime("Parameter 'Variant' must be a string")),
     }
 }
@@ -423,33 +410,36 @@ fn quadratic_matrix(it: &mut Interp, a: &mut CallArgs) -> RResult<(Value, Mat)> 
     let ctx = crate::intrinsics::matrices::entry_ctx(it, &ring)?;
     let mut q = Mat::zero(&ctx, n, n);
     let one = Elem::one(&ctx).map_err(gr)?;
+    let revised = variant(a)? == "Revised";
     for i in 0..(n + 1) / 2 {
         q.set_entry(i, n - 1 - i, &one);
     }
     if !a.param_bool("Minus")? || n == 0 {
         return Ok((ring, q));
     }
-    let g = primitive(it, &ring)?;
     if n % 2 == 1 {
-        if p != Integer::from_u64(2) {
-            q.set_entry(n / 2, n / 2, &g.neg().map_err(gr)?);
+        if p == Integer::from_u64(2) {
+            let msg = "Minus type is not available in even characteristic";
+            let mut e = super::bare(RuntimeError::runtime(msg));
+            e.object = Some(Value::str(msg));
+            return Err(e);
         }
+        let (_, _, disc) = primitive_plane(it, &ring)?;
+        q.set_entry(n / 2, n / 2, &disc.neg().map_err(gr)?);
         return Ok((ring, q));
     }
     let i = n / 2 - 1;
-    if variant(a)? == "Revised" && p != Integer::from_u64(2) {
+    let (b, c, disc) = primitive_plane(it, &ring)?;
+    if revised && p != Integer::from_u64(2) {
         let two = Elem::from_integer(&ctx, &Integer::from_u64(2)).map_err(gr)?;
         let half = two.inv().map_err(gr)?;
-        let minus_one_square = one.neg().map_err(gr)?.is_square() == Truth::True;
-        let c = if minus_one_square { half.mul(&g).map_err(gr)? } else { half.clone() };
         q.set_entry(i, i, &half);
         q.set_entry(i, i + 1, &Elem::zero(&ctx));
-        q.set_entry(i + 1, i + 1, &c);
+        q.set_entry(i + 1, i + 1, &disc.mul(&half).map_err(gr)?);
     } else {
-        let c = anisotropic_coefficient(it, &ring, &p)?;
-        q.set_entry(i, i, &one);
-        q.set_entry(i, i + 1, &one);
-        q.set_entry(i + 1, i + 1, &c);
+        q.set_entry(i, i, &one.neg().map_err(gr)?);
+        q.set_entry(i, i + 1, &b);
+        q.set_entry(i + 1, i + 1, &c.neg().map_err(gr)?);
     }
     Ok((ring, q))
 }
