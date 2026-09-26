@@ -30,6 +30,7 @@ pub mod quadrature;
 mod rational;
 mod real;
 mod series;
+pub mod smallfq;
 mod special;
 
 pub use complex::{Complex, Elementary, ModifiedPolylog};

@@ -99,20 +99,85 @@ static FQ_NMOD: FqFns = FqFns {
     irreducible: fq_nmod_poly_is_irreducible,
 };
 
+/// Fields with Zech logarithms pass their gr context (see `zech_ctx`).
 static FQ_ZECH: FqFns = FqFns {
-    gcd: fq_zech_poly_gcd,
-    xgcd: fq_zech_poly_xgcd,
-    divrem: fq_zech_poly_divrem,
-    powmod: fq_zech_poly_powmod_fmpz_binexp,
-    fac_init: fq_zech_poly_factor_init,
-    fac_clear: fq_zech_poly_factor_clear,
-    factor: fq_zech_poly_factor,
-    sqfree: fq_zech_poly_factor_squarefree,
-    ddf: fq_zech_poly_factor_distinct_deg,
-    edf: fq_zech_poly_factor_equal_deg,
-    roots: fq_zech_poly_roots,
-    irreducible: fq_zech_poly_is_irreducible,
+    gcd: zech_gcd,
+    xgcd: zech_xgcd,
+    divrem: zech_divrem,
+    powmod: zech_powmod,
+    fac_init: zech_fac_init,
+    fac_clear: zech_fac_clear,
+    factor: zech_factor,
+    sqfree: zech_sqfree,
+    ddf: zech_ddf,
+    edf: zech_edf,
+    roots: zech_roots,
+    irreducible: zech_irreducible,
 };
+
+// Over a field with Zech logarithms, division, gcds and powers modulo a
+// polynomial go through gr on the field's context, whose methods run the
+// kernels of `smallfq` (and FLINT's fq_zech functions should gr give up);
+// the rest are FLINT's fq_zech functions.
+
+/// The fq_zech context of the gr context of a field with Zech logarithms
+/// (its first word).
+unsafe fn zech_ctx(ctx: C) -> C {
+    unsafe { *(ctx as *const C) }
+}
+
+unsafe extern "C" fn zech_gcd(r: P, a: C, b: C, ctx: C) {
+    unsafe {
+        if sys::gr_poly_gcd(r.cast(), a.cast(), b.cast(), ctx as *mut _) != 0 {
+            fq_zech_poly_gcd(r, a, b, zech_ctx(ctx));
+        }
+    }
+}
+
+unsafe extern "C" fn zech_xgcd(g: P, s: P, t: P, a: C, b: C, ctx: C) {
+    unsafe {
+        if sys::gr_poly_xgcd(g.cast(), s.cast(), t.cast(), a.cast(), b.cast(), ctx as *mut _) != 0 {
+            fq_zech_poly_xgcd(g, s, t, a, b, zech_ctx(ctx));
+        }
+    }
+}
+
+unsafe extern "C" fn zech_divrem(q: P, r: P, a: C, b: C, ctx: C) {
+    unsafe {
+        if sys::gr_poly_divrem(q.cast(), r.cast(), a.cast(), b.cast(), ctx as *mut _) != 0 {
+            fq_zech_poly_divrem(q, r, a, b, zech_ctx(ctx));
+        }
+    }
+}
+
+unsafe extern "C" fn zech_powmod(r: P, a: C, e: *const sys::fmpz, f: C, ctx: C) {
+    unsafe {
+        if sys::gr_poly_powmod_fmpz_binexp(r.cast(), a.cast(), e, f.cast(), ctx as *mut _) != 0 {
+            fq_zech_poly_powmod_fmpz_binexp(r, a, e, f, zech_ctx(ctx));
+        }
+    }
+}
+
+/// `$name`: FLINT's fq_zech function `$f` with the fq_zech context of the
+/// gr context passed last.
+macro_rules! on_zech_ctx {
+    ($($name:ident = $f:ident($($a:ident: $t:ty),*) $(-> $r:ty)?;)*) => {$(
+        unsafe extern "C" fn $name($($a: $t,)* ctx: C) $(-> $r)? {
+            unsafe { $f($($a,)* zech_ctx(ctx)) }
+        }
+    )*};
+}
+
+on_zech_ctx! {
+    zech_fac_init = fq_zech_poly_factor_init(f: P);
+    zech_fac_clear = fq_zech_poly_factor_clear(f: P);
+    zech_factor = fq_zech_poly_factor(f: P, lc: P, a: C);
+    zech_sqfree = fq_zech_poly_factor_squarefree(f: P, a: C);
+    zech_ddf = fq_zech_poly_factor_distinct_deg(f: P, a: C, degs: *const *mut sys::slong);
+    zech_edf = fq_zech_poly_factor_equal_deg(f: P, a: C, d: sys::slong);
+    zech_roots = fq_zech_poly_roots(f: P, a: C, mult: c_int);
+    zech_irreducible = fq_zech_poly_is_irreducible(a: C) -> c_int;
+}
 
 /// Packed fields convert to and from fq_nmod (see `packed`).
 static FQ_PACKED: FqFns = FqFns {
@@ -228,10 +293,10 @@ fn rep(base: &Ctx) -> Rep {
             CtxKind::Rationals => Rep::Q,
             CtxKind::Nmod(n) => Rep::Nmod(Mod::of(&*(data as *const sys::nmod_t)), sys::n_is_prime(*n as sys::ulong) != 0),
             CtxKind::FmpzMod(_) => Rep::FmpzMod(*(data as *const *const sys::fmpz_mod_ctx_struct), fmpz_mod_is_field(base)),
-            CtxKind::FqZech { .. } => Rep::Fq(&FQ_ZECH, *(data as *const C)),
             CtxKind::FqNmod { .. } => Rep::Fq(&FQ_NMOD, *(data as *const C)),
             CtxKind::Fq { .. } => Rep::Fq(&FQ, *(data as *const C)),
             // With the gr context itself.
+            CtxKind::FqZech { .. } => Rep::Fq(&FQ_ZECH, base.ptr() as C),
             CtxKind::FqPacked { .. } => Rep::Fq(&FQ_PACKED, base.ptr() as C),
             _ => Rep::Generic,
         }

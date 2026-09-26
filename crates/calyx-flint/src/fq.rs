@@ -27,11 +27,13 @@ impl Ctx {
 /// `gr_ctx_init_fq_zech_modulus_nmod_poly` with the tables of Zech
 /// logarithms built by `zech_tables` rather than FLINT's loop, which
 /// multiplies with `fq_nmod_mul` and takes most of the time of making a
-/// small field. The tables are FLINT's own, so FLINT clears them.
+/// small field. The tables are FLINT's own, so FLINT clears them. The
+/// context gets its own copy of FLINT's methods, with the kernels of
+/// `smallfq` in place of some.
 ///
 /// # Safety
-/// `c` must point to an uninitialised context and `modulus` to a monic
-/// irreducible polynomial of degree at least 1 with p^degree below 2^32.
+/// `c` must point to a zeroed context and `modulus` to a monic irreducible
+/// polynomial of degree at least 1 with p^degree below 2^32.
 pub(crate) unsafe fn init_fq_zech(c: *mut sys::gr_ctx_struct, modulus: *const sys::nmod_poly_struct, var: *const std::os::raw::c_char) -> std::os::raw::c_int {
     unsafe {
         let nctx = sys::flint_malloc(std::mem::size_of::<sys::fq_nmod_ctx_struct>()) as *mut sys::fq_nmod_ctx_struct;
@@ -40,6 +42,7 @@ pub(crate) unsafe fn init_fq_zech(c: *mut sys::gr_ctx_struct, modulus: *const sy
         if zech_tables(zctx, nctx) {
             (*zctx).owns_fq_nmod_ctx = 1;
             sys::_gr_ctx_init_fq_zech_from_ref(c, zctx as *const std::ffi::c_void);
+            crate::smallfq::install(c);
             0
         } else {
             sys::fq_nmod_ctx_clear(nctx);
@@ -307,7 +310,7 @@ impl std::fmt::Debug for Zech {
     }
 }
 
-/// A table of a context that is never freed.
+/// A table of a context that outlives its use (see `Zech::from_raw`).
 unsafe fn table(t: *const sys::ulong, n: usize) -> &'static [sys::ulong] {
     unsafe { std::slice::from_raw_parts(t, n) }
 }
@@ -317,16 +320,22 @@ impl Zech {
     pub fn of(ctx: &Rc<Ctx>) -> Option<Zech> {
         let CtxKind::FqZech { .. } = ctx.kind() else { return None };
         std::mem::forget(ctx.clone());
-        let z = unsafe { &*fq_ctx_ptr::<sys::fq_zech_ctx_struct>(ctx) };
+        Some(unsafe { Zech::from_raw(fq_ctx_ptr::<sys::fq_zech_ctx_struct>(ctx)) })
+    }
+
+    /// The tables of the fq_zech context `z`, which must outlive every copy
+    /// of the handle (`of` keeps its context alive for good instead).
+    pub(crate) unsafe fn from_raw(z: *const sys::fq_zech_ctx_struct) -> Zech {
+        let z = unsafe { &*z };
         let (q, p) = (z.qm1 as usize + 1, z.p as usize);
-        Some(Zech {
+        Zech {
             qm1: z.qm1 as u64,
             minus_one: z.qm1o2 as u64,
             p: crate::Nmod::new(z.p as u64),
             zech: unsafe { table(z.zech_log_table, q) },
             prime: unsafe { table(z.prime_field_table, p) },
             eval: unsafe { table(z.eval_table, q) },
-        })
+        }
     }
 
     /// The word of zero, q - 1.
