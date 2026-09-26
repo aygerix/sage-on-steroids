@@ -217,7 +217,19 @@ pub fn fmt_parent(it: &mut Interp, p: &mut Printer, st: &Struct, indent: usize) 
     p.level = Level::Minimal;
     let r = it.fmt(p, &ring, indent);
     p.level = saved;
-    r
+    r?;
+    match &mp.form {
+        Some(f) if saved != Level::Minimal => fmt_form(it, p, &ring, f, indent),
+        _ => Ok(()),
+    }
+}
+
+/// The inner product matrix of a space, below it.
+fn fmt_form(it: &mut Interp, p: &mut Printer, ring: &Value, f: &Mat, indent: usize) -> RResult<()> {
+    p.newline(indent);
+    p.write("Inner Product Matrix:");
+    p.newline(indent);
+    fmt_rows(it, p, ring, f, false, indent)
 }
 
 /// A subspace of an R-space: its degree and dimension, and its basis
@@ -259,5 +271,9 @@ fn fmt_subspace(it: &mut Interp, p: &mut Printer, st: &Struct, indent: usize) ->
     p.newline(indent);
     p.write(if sub.echelonized { "Echelonized basis:" } else { "Basis:" });
     p.newline(indent);
-    fmt_rows(it, p, &ring, &basis, true, indent)
+    fmt_rows(it, p, &ring, &basis, true, indent)?;
+    match &info(&sub.full).form {
+        Some(f) => fmt_form(it, p, &ring, f, indent),
+        None => Ok(()),
+    }
 }

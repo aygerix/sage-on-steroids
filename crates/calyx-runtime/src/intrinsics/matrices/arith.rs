@@ -164,6 +164,11 @@ pub fn binop(it: &mut Interp, op: BinOp, a: &Value, b: &Value) -> RResult<Option
             let Some((ring, p, q)) = over_common(it, x, y)? else { return Err(types_error(it, "Bad argument types", a, b)) };
             let m = p.mul(&q).map_err(|e| gr(e, "Multiplication failed"))?;
             if x.is_vector() {
+                // Of the same degree, the product stays in the full space of
+                // the vector (and keeps its inner product).
+                if ring == *x.ring() && m.ncols() == x.m.ncols() {
+                    return Ok(Some(Value::Mat(Rc::new(Mtrx { parent: generic(&x.parent), m }))));
+                }
                 return Ok(Some(vec_value(it, &ring, m)?));
             }
             if ring == *x.ring() && m.nrows() == x.m.nrows() && m.ncols() == x.m.ncols() {

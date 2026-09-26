@@ -28,6 +28,7 @@ mod order;
 mod predicates;
 mod print;
 mod spaces;
+mod vectors;
 
 use std::cell::RefCell;
 use std::hash::{Hash, Hasher};
@@ -50,6 +51,7 @@ pub use creation::coerce;
 pub use linalg::{echelon, rank_of};
 pub use print::{fmt_matrix, fmt_parent};
 pub use spaces::elements;
+pub use vectors::{form_space, inner_product_matrix};
 
 /// A matrix or a vector: its entries and its parent.
 #[derive(Clone)]
@@ -72,6 +74,9 @@ pub struct MatParent {
     pub ctx: Rc<Ctx>,
     /// For a subspace of an R-space, its basis.
     pub sub: Option<Sub>,
+    /// For a full R-space, its inner product matrix when that is not the
+    /// identity (a subspace has the form of its full space).
+    pub form: Option<Mat>,
 }
 
 /// The basis of a subspace of an R-space, and the full space.
@@ -121,7 +126,12 @@ impl MatParent {
             (Some(a), Some(b)) => a.echelonized == b.echelonized && a.basis.equal(&b.basis) == Truth::True,
             _ => false,
         };
-        self.shape == o.shape && self.nrows == o.nrows && self.ncols == o.ncols && self.ring == o.ring && subs
+        let forms = match (&self.form, &o.form) {
+            (None, None) => true,
+            (Some(a), Some(b)) => a.equal(b) == Truth::True,
+            _ => false,
+        };
+        self.shape == o.shape && self.nrows == o.nrows && self.ncols == o.ncols && self.ring == o.ring && subs && forms
     }
 
     pub fn hash_key(&self) -> u64 {
@@ -222,7 +232,7 @@ pub fn parent(it: &mut Interp, ring: &Value, nrows: usize, ncols: usize, shape: 
     }
     let ctx = entry_ctx(it, ring)?;
     let field = it.types.isa(ring.type_id(), t::FLD);
-    let p = Struct::new(StructKind::Matrices(Rc::new(MatParent { ring: ring.clone(), nrows, ncols, shape, field, ctx, sub: None })));
+    let p = Struct::new(StructKind::Matrices(Rc::new(MatParent { ring: ring.clone(), nrows, ncols, shape, field, ctx, sub: None, form: None })));
     if let Some(k) = key {
         PARENTS.with(|c| c.borrow_mut().insert(k, p.clone()));
     }
@@ -410,4 +420,5 @@ pub fn register(it: &mut Interp) {
     order::register(it);
     predicates::register(it);
     spaces::register(it);
+    vectors::register(it);
 }
