@@ -491,6 +491,68 @@ impl Mat {
         }
     }
 
+    /// Approximate eigenvalues and corresponding right eigenvectors of a
+    /// square complex floating-point matrix, by FLINT's shifted QR method.
+    pub fn approx_eigen(&self) -> GrResult<(Vec<Elem>, Mat)> {
+        let CtxKind::ComplexFloat(prec) = self.ctx.kind() else { return Err(GrError::Domain) };
+        if self.nrows() != self.ncols() {
+            return Err(GrError::Domain);
+        }
+        let n = self.nrows();
+        let mut a = sys::acb_mat_struct::default();
+        let mut r = sys::acb_mat_struct::default();
+        let mut eigen: Vec<sys::acb_struct> = std::iter::repeat_with(sys::acb_struct::default).take(n).collect();
+        unsafe {
+            sys::acb_mat_init(&mut a, n as sys::slong, n as sys::slong);
+            sys::acb_mat_init(&mut r, n as sys::slong, n as sys::slong);
+            for z in &mut eigen {
+                sys::acb_init(z);
+            }
+            for i in 0..n {
+                for j in 0..n {
+                    let src = self.ptr(i, j).cast::<sys::arf_struct>();
+                    let dst = a.entries.add(i * a.stride as usize + j);
+                    sys::arf_set(&mut (*dst).real.mid, src);
+                    sys::arf_set(&mut (*dst).imag.mid, src.add(1));
+                }
+            }
+        }
+        let ok = unsafe {
+            sys::acb_mat_approx_eig_qr(eigen.as_mut_ptr(), std::ptr::null_mut(), &mut r, &a, std::ptr::null(), 0, *prec as sys::slong)
+        };
+        let mut values = Vec::with_capacity(n);
+        let mut vectors = Mat::zero(&self.ctx, n, n);
+        if ok != 0 {
+            for z in &eigen {
+                let mut e = Elem::new(&self.ctx);
+                let dst = e.as_mut_ptr().cast::<sys::arf_struct>();
+                unsafe {
+                    sys::arf_set(dst, &z.real.mid);
+                    sys::arf_set(dst.add(1), &z.imag.mid);
+                }
+                values.push(e);
+            }
+            for i in 0..n {
+                for j in 0..n {
+                    let dst = vectors.ptr_mut(i, j).cast::<sys::arf_struct>();
+                    let src = unsafe { r.entries.add(i * r.stride as usize + j) };
+                    unsafe {
+                        sys::arf_set(dst, &(*src).real.mid);
+                        sys::arf_set(dst.add(1), &(*src).imag.mid);
+                    }
+                }
+            }
+        }
+        unsafe {
+            for z in &mut eigen {
+                sys::acb_clear(z);
+            }
+            sys::acb_mat_clear(&mut r);
+            sys::acb_mat_clear(&mut a);
+        }
+        if ok == 0 { Err(GrError::Unable) } else { Ok((values, vectors)) }
+    }
+
     pub fn trace(&self) -> GrResult<Elem> {
         let mut e = Elem::new(&self.ctx);
         check(unsafe { sys::gr_mat_trace(e.as_mut_ptr(), &self.raw, self.ctx.ptr()) })?;
