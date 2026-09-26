@@ -30,9 +30,10 @@
 //! over a middle range of lengths (`Cutoffs`), on FLINT's classical
 //! algorithms below it and on its fast ones above. In the lanes form gcds
 //! keep FLINT's algorithms, over the kernels' products and division.
-//! Products of matrices run on the kernels from small sizes on, and for
-//! large matrices over odd characteristic through FLINT's products over
-//! GF(p) (`mat`).
+//! Products of matrices run on the kernels from small sizes on (for large
+//! matrices over odd characteristic, through FLINT's products over GF(p)),
+//! and so do LU decomposition, triangular solves and the reduction of rows;
+//! determinants go by LU (`mat`).
 
 use std::ffi::{c_int, c_void};
 use std::ops::Range;
@@ -80,6 +81,14 @@ struct Cutoffs {
     /// products through GF(p) above. The kernels also take the products
     /// FLINT would make by Kronecker substitution.
     mat_mul: (usize, usize),
+    /// LU decomposition, by the lesser dimension; triangular solves, by
+    /// the lesser of the order and the number of right-hand columns; and
+    /// the reduction of a row by others, by its length: the kernels from
+    /// these on. Each step of an elimination converts a row, which small
+    /// matrices do not repay.
+    lu: usize,
+    solve: usize,
+    reduce_row: usize,
 }
 
 impl SmallFq {
@@ -94,7 +103,11 @@ impl SmallFq {
                 divrem: (2, 3, 24, 640 * n),
                 gcd: (6, 8192),
                 xgcd: (6, 768 * n),
-                mat_mul: (1, usize::MAX),
+                // Not below: products by vectors would be rows of one word.
+                mat_mul: (4, usize::MAX),
+                lu: 6,
+                solve: 6,
+                reduce_row: 8,
             },
             Form::Planes => Cutoffs {
                 mullow: (n + 1, 64 * (n + 1), if n == 1 { 512 } else { 3072 / n }),
@@ -109,6 +122,13 @@ impl SmallFq {
                     },
                     via_p,
                 ),
+                lu: match n {
+                    1 | 2 => 10,
+                    3 => 12,
+                    _ => 20,
+                },
+                solve: if n <= 2 { 8 } else { 16 },
+                reduce_row: if n <= 2 { 20 } else { 48 },
             },
             Form::Lanes => Cutoffs {
                 mullow: ((n + 1).max(3), 40 * n + 64, if n == 1 { 128 } else { 512 }),
@@ -136,6 +156,9 @@ impl SmallFq {
                     },
                 ),
                 mat_mul: (if n <= 8 { 8 } else { 10 }, via_p),
+                lu: if n <= 8 { 12 } else { 24 },
+                solve: if n <= 8 { 10 } else { 16 },
+                reduce_row: if n <= 8 { 14 } else { 48 },
             },
         }
     }
@@ -1185,6 +1208,9 @@ type Clear = unsafe extern "C" fn(GrCtx);
 type Mullow = unsafe extern "C" fn(*mut c_void, *const c_void, sys::slong, *const c_void, sys::slong, sys::slong, GrCtx) -> c_int;
 type Divrem = unsafe extern "C" fn(*mut c_void, *mut c_void, *const c_void, sys::slong, *const c_void, sys::slong, GrCtx) -> c_int;
 type MatMul = unsafe extern "C" fn(*mut sys::gr_mat_struct, *const sys::gr_mat_struct, *const sys::gr_mat_struct, GrCtx) -> c_int;
+type Lu = unsafe extern "C" fn(*mut sys::slong, *mut sys::slong, *mut sys::gr_mat_struct, *const sys::gr_mat_struct, c_int, GrCtx) -> c_int;
+type Solve = unsafe extern "C" fn(*mut sys::gr_mat_struct, *const sys::gr_mat_struct, *const sys::gr_mat_struct, c_int, GrCtx) -> c_int;
+type ReduceRow = unsafe extern "C" fn(*mut sys::slong, *mut sys::gr_mat_struct, *mut sys::slong, *mut sys::slong, sys::slong, GrCtx) -> c_int;
 
 /// What a field with Zech logarithms made by calyx adds to its gr context,
 /// at data word 1: its own copy of FLINT's method table, FLINT's methods
@@ -1195,6 +1221,10 @@ struct Ext {
     mullow: Mullow,
     divrem: Divrem,
     mat_mul: MatMul,
+    lu: Lu,
+    solve_tril: Solve,
+    solve_triu: Solve,
+    reduce_row: ReduceRow,
     cut: Cutoffs,
     k: SmallFq,
 }
@@ -1214,8 +1244,8 @@ unsafe fn ext(ctx: GrCtx) -> *mut Ext {
 /// Give `c`, the gr context of a field with Zech logarithms just made by
 /// FLINT (and zeroed before), its extension: the context's methods become
 /// FLINT's, with the kernels in place of polynomial products, division,
-/// gcds and products of matrices, and with a clear that frees the extension
-/// too.
+/// gcds, products of matrices and elimination, and with a clear that frees
+/// the extension too.
 pub(crate) unsafe fn install(c: GrCtx) {
     unsafe {
         let z = fq_zech(c);
@@ -1228,16 +1258,28 @@ pub(crate) unsafe fn install(c: GrCtx) {
             mullow: std::mem::transmute::<unsafe extern "C" fn() -> c_int, Mullow>(method(sys::gr_method_GR_METHOD_POLY_MULLOW)),
             divrem: std::mem::transmute::<unsafe extern "C" fn() -> c_int, Divrem>(method(sys::gr_method_GR_METHOD_POLY_DIVREM)),
             mat_mul: std::mem::transmute::<unsafe extern "C" fn() -> c_int, MatMul>(method(sys::gr_method_GR_METHOD_MAT_MUL)),
+            lu: std::mem::transmute::<unsafe extern "C" fn() -> c_int, Lu>(method(sys::gr_method_GR_METHOD_MAT_LU)),
+            solve_tril: std::mem::transmute::<unsafe extern "C" fn() -> c_int, Solve>(method(sys::gr_method_GR_METHOD_MAT_NONSINGULAR_SOLVE_TRIL)),
+            solve_triu: std::mem::transmute::<unsafe extern "C" fn() -> c_int, Solve>(method(sys::gr_method_GR_METHOD_MAT_NONSINGULAR_SOLVE_TRIU)),
+            reduce_row: std::mem::transmute::<unsafe extern "C" fn() -> c_int, ReduceRow>(method(sys::gr_method_GR_METHOD_MAT_REDUCE_ROW)),
             cut: k.cutoffs(),
             k,
         });
-        let ours: [(sys::gr_method, *const ()); 6] = [
+        let ours: [(sys::gr_method, *const ()); 12] = [
             (sys::gr_method_GR_METHOD_CTX_CLEAR, ctx_clear as *const ()),
             (sys::gr_method_GR_METHOD_POLY_MULLOW, poly_mullow as *const ()),
             (sys::gr_method_GR_METHOD_POLY_DIVREM, poly_divrem as *const ()),
             (sys::gr_method_GR_METHOD_POLY_GCD, poly_gcd as *const ()),
             (sys::gr_method_GR_METHOD_POLY_XGCD, poly_xgcd as *const ()),
             (sys::gr_method_GR_METHOD_MAT_MUL, mat::mat_mul as *const ()),
+            (sys::gr_method_GR_METHOD_MAT_LU, mat::lu as *const ()),
+            // FLINT's for fields: cofactors up to 4 × 4, then LU, where
+            // fq_zech's default is Berkowitz's O(n^4) algorithm.
+            (sys::gr_method_GR_METHOD_MAT_DET, sys::gr_mat_det_generic_field as *const ()),
+            (sys::gr_method_GR_METHOD_MAT_NONSINGULAR_SOLVE_TRIL, mat::solve_tril as *const ()),
+            (sys::gr_method_GR_METHOD_MAT_NONSINGULAR_SOLVE_TRIU, mat::solve_triu as *const ()),
+            (sys::gr_method_GR_METHOD_MAT_FIND_NONZERO_PIVOT, mat::find_pivot as *const ()),
+            (sys::gr_method_GR_METHOD_MAT_REDUCE_ROW, mat::reduce_row as *const ()),
         ];
         for (i, f) in ours {
             e.methods[i as usize] = Some(std::mem::transmute::<*const (), unsafe extern "C" fn() -> c_int>(f));
@@ -1396,12 +1438,12 @@ mod tests {
     pub(super) struct Lcg(pub(super) u64);
 
     impl Lcg {
-        fn next(&mut self) -> u64 {
+        pub(super) fn next(&mut self) -> u64 {
             self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
             self.0 ^ self.0 >> 29
         }
 
-        fn below(&mut self, n: usize) -> usize {
+        pub(super) fn below(&mut self, n: usize) -> usize {
             (self.next() % n as u64) as usize
         }
     }
@@ -1452,7 +1494,7 @@ mod tests {
     }
 
     /// Random words of a field, zero one time in five.
-    fn word(k: &SmallFq, rng: &mut Lcg) -> u64 {
+    pub(super) fn word(k: &SmallFq, rng: &mut Lcg) -> u64 {
         if rng.below(5) == 0 { k.qm1 } else { rng.next() % k.qm1 }
     }
 
@@ -1699,9 +1741,18 @@ mod tests {
     /// The kernels at every length, and in a window only, so that FLINT's
     /// algorithms on either side of it take their turns: with the measured
     /// cutoffs, the three sets the tests run with.
-    const EVERYWHERE: Cutoffs =
-        Cutoffs { mullow: (1, 1, usize::MAX), divrem: (1, 1, 1, usize::MAX), gcd: (2, usize::MAX), xgcd: (2, usize::MAX), mat_mul: (1, usize::MAX) };
-    const WINDOW: Cutoffs = Cutoffs { mullow: (4, 64, 40), divrem: (4, 8, 64, 40), gcd: (8, 40), xgcd: (8, 40), mat_mul: (4, 40) };
+    pub(super) const EVERYWHERE: Cutoffs = Cutoffs {
+        mullow: (1, 1, usize::MAX),
+        divrem: (1, 1, 1, usize::MAX),
+        gcd: (2, usize::MAX),
+        xgcd: (2, usize::MAX),
+        mat_mul: (1, usize::MAX),
+        lu: 1,
+        solve: 1,
+        reduce_row: 1,
+    };
+    const WINDOW: Cutoffs =
+        Cutoffs { mullow: (4, 64, 40), divrem: (4, 8, 64, 40), gcd: (8, 40), xgcd: (8, 40), mat_mul: (4, 40), lu: 4, solve: 4, reduce_row: 4 };
 
     fn cutoff_sets(k: &SmallFq) -> [(Cutoffs, &'static str); 3] {
         [(k.cutoffs(), "measured"), (EVERYWHERE, "everywhere"), (WINDOW, "window")]
