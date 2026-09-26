@@ -38,3 +38,9 @@ print "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbb
 [t^2 + (10^68 + 1)*t, 1];
 // A polynomial that wraps inside, then more.
 <1, t^3 + (10^60 + 1)*t^2 + (10^60 + 1)*t, 10^40, 10^40>;
+// The threshold is half of the line after its indentation: a word too long for any line starting
+// in columns 40 and 41 at indentation 0, 42 and 43 at 4 (continued) and 44 and 45 at 8 (nested).
+big := 10^79 + 1;
+for k in [34, 35] do (10^k + 1)*t + big; end for;
+for k in [31, 32] do (10^(80+k) + 1)*t + big; end for;
+for k in [30, 31] do [[(10^k + 1)*t + big]]; end for;
