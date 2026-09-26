@@ -4,6 +4,7 @@ mod linalg;
 mod determinant;
 mod charpoly;
 mod structured;
+mod modular;
 
 use std::cell::RefCell;
 use std::hash::{Hash, Hasher};
@@ -1458,4 +1459,5 @@ pub fn register(it: &mut Interp) {
     linalg::register(it);
     determinant::register(it);
     charpoly::register(it);
+    modular::register(it);
 }
