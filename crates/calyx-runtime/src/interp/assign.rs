@@ -933,6 +933,18 @@ impl Interp {
                 let k = seq_index(i, "String").map_err(|e| e.in_context(ctx))?;
                 s.char_at(k - 1).map(Value::str).ok_or_else(|| RuntimeError::runtime(format!("String index {k} is out of range")).in_context(ctx))
             }
+            Value::BStr(s) => {
+                if let Value::Seq(ix) = i {
+                    let mut out = Vec::with_capacity(ix.elems.len());
+                    for k in &ix.elems {
+                        let k = seq_index(k, "Binary string").map_err(|e| e.in_context(ctx))?;
+                        out.push(*s.get(k - 1).ok_or_else(|| RuntimeError::runtime(format!("Binary string index {k} is out of range")).in_context(ctx))?);
+                    }
+                    return Ok(Value::bytes(out));
+                }
+                let k = seq_index(i, "Binary string").map_err(|e| e.in_context(ctx))?;
+                s.get(k - 1).map(|b| Value::int(*b as i64)).ok_or_else(|| RuntimeError::runtime(format!("Binary string index {k} is out of range")).in_context(ctx))
+            }
             Value::Assoc(a) => {
                 let key = match &a.universe {
                     Some(u) => {

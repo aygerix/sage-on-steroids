@@ -236,6 +236,10 @@ impl Interp {
                 Rc::make_mut(s).push_text(t);
                 return Ok(());
             }
+            (BinOp::Cat, Value::BStr(s), Value::BStr(t)) => {
+                Rc::make_mut(s).extend(t.iter().copied());
+                return Ok(());
+            }
             _ => {}
         }
         let cur = x.clone();
@@ -312,6 +316,12 @@ impl Interp {
             Pow => return self.power(a, b),
             Cat => match (a, b) {
                 (Str(x), Str(y)) => Value::str(&format!("{x}{y}")),
+                (Value::BStr(x), Value::BStr(y)) => {
+                    let mut out = Vec::with_capacity(x.len() + y.len());
+                    out.extend(x.iter().copied());
+                    out.extend(y.iter().copied());
+                    Value::bytes(out)
+                }
                 (Seq(x), Seq(y)) => {
                     let u = match (&x.universe, &y.universe) {
                         (None, u) | (u, None) => u.clone(),
@@ -466,6 +476,7 @@ impl Interp {
             Value::ISet(s) => s.elems.len(),
             Value::MSet(s) => return Ok(Value::Int(Integer::from_u64(s.total()))),
             Value::Str(s) => s.len(),
+            Value::BStr(s) => s.len(),
             Value::Tuple(t) => t.elems.len(),
             Value::List(l) => l.len(),
             Value::Assoc(a) => a.map.len(),
@@ -525,7 +536,7 @@ impl Interp {
     /// incomparable values an error (`eq`); otherwise they are unequal
     /// (`cmpeq`). `None` means no built-in rule applies.
     pub fn compare_eq(&mut self, a: &Value, b: &Value, strict: bool) -> RResult<Option<bool>> {
-        use Value::{Assoc, Bool, Cat, CopElt, ECat, Formal, Func, ISet, Int, Intr, Io, List, MSet, Map, Obj, Rec, Seq, Set, Str, Struct, Tuple};
+        use Value::{Assoc, BStr, Bool, Cat, CopElt, ECat, Formal, Func, ISet, Int, Intr, Io, List, MSet, Map, Obj, Rec, Seq, Set, Str, Struct, Tuple};
         let incompatible = |msg: &str| -> RResult<Option<bool>> {
             if strict {
                 Err(RuntimeError::runtime(msg.to_string()).in_context("eq"))
@@ -641,6 +652,7 @@ impl Interp {
             (Int(x), Int(y)) => x == y,
             (Bool(x), Bool(y)) => x == y,
             (Str(x), Str(y)) => x == y,
+            (BStr(x), BStr(y)) => x == y,
             _ if is_num(a) && is_num(b) => rat_of(a) == rat_of(b),
             (Seq(x), Seq(y)) => {
                 if let (Some(u), Some(v)) = (&x.universe, &y.universe) {
@@ -753,6 +765,7 @@ impl Interp {
             (Int(x), Int(y)) => x.cmp(y),
             _ if is_num(a) && is_num(b) => rat_of(a).unwrap().cmp(&rat_of(b).unwrap()),
             (Str(x), Str(y)) => x.cmp(y),
+            (BStr(x), BStr(y)) => x.cmp(y),
             (Bool(x), Bool(y)) => x.cmp(y),
             (Infinity(_), _) | (_, Infinity(_)) => return Ok(natural_cmp(a, b)),
             (Elt(x), Elt(y)) if x.ring().id == y.ring().id => {
@@ -1058,7 +1071,7 @@ impl Interp {
         // aggregates, whatever their length.
         let fits = match op {
             BinOp::And | BinOp::Or => matches!(acc, Value::Bool(_)),
-            BinOp::Cat => matches!(acc, Value::Seq(_) | Value::Str(_) | Value::List(_)),
+            BinOp::Cat => matches!(acc, Value::Seq(_) | Value::Str(_) | Value::BStr(_) | Value::List(_)),
             _ => true,
         };
         if !fits {

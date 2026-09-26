@@ -12,9 +12,30 @@ fn str_seq(v: Vec<String>) -> Value {
     Value::seq(Some(Value::strings()), v.into_iter().map(|s| Value::str(&s)).collect())
 }
 
+fn binary_string(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let bytes = match &a.args[0] {
+        Value::Str(s) => s.as_bytes().to_vec(),
+        Value::Seq(s) => {
+            let mut out = Vec::with_capacity(s.elems.len());
+            for v in &s.elems {
+                let Value::Int(n) = v else { return Err(RuntimeError::runtime("Binary string entries must be integers")) };
+                out.push(n.to_u64().filter(|n| *n <= 255).ok_or_else(|| RuntimeError::runtime("Binary string entries must be between 0 and 255"))? as u8);
+            }
+            out
+        }
+        _ => unreachable!(),
+    };
+    one(Value::bytes(bytes))
+}
+
 fn eltseq(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
     let s = a.str(0)?;
     one(str_seq(s.chars().map(|c| c.to_string()).collect()))
+}
+
+fn binary_eltseq(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let Value::BStr(s) = &a.args[0] else { unreachable!() };
+    one(Value::int_seq(s.iter().map(|b| Integer::from_u64(*b as u64))))
 }
 
 fn substring(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
@@ -27,6 +48,18 @@ fn substring(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
     let start = (n as usize - 1).min(s.len());
     let end = (start + k as usize).min(s.len());
     one(Value::str(&s[start..end].iter().collect::<String>()))
+}
+
+fn binary_substring(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let Value::BStr(s) = &a.args[0] else { unreachable!() };
+    let n = a.i64(1)?;
+    let k = a.i64(2)?;
+    if n < 1 || k < 0 {
+        return Err(RuntimeError::runtime("Position must be positive and length non-negative"));
+    }
+    let start = (n as usize - 1).min(s.len());
+    let end = start.saturating_add(k as usize).min(s.len());
+    one(Value::bytes(s[start..end].to_vec()))
 }
 
 fn position(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
@@ -163,9 +196,16 @@ fn int_from_string(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
 }
 
 pub fn register(it: &mut Interp) {
+    for name in ["BinaryString", "BString"] {
+        it.def(name, "s::MonStgElt -> BStgElt", "The bytes of s as a binary string.", binary_string);
+        it.def(name, "s::SeqEnum -> BStgElt", "The integers in s as a binary string.", binary_string);
+    }
     it.def("ElementToSequence", "s::MonStgElt -> [MonStgElt]", "The characters of s as a sequence of strings.", eltseq);
     it.def("Eltseq", "s::MonStgElt -> [MonStgElt]", "The characters of s as a sequence of strings.", eltseq);
+    it.def("ElementToSequence", "s::BStgElt -> [RngIntElt]", "The bytes of s as a sequence of integers.", binary_eltseq);
+    it.def("Eltseq", "s::BStgElt -> [RngIntElt]", "The bytes of s as a sequence of integers.", binary_eltseq);
     it.def("Substring", "s::MonStgElt, n::RngIntElt, k::RngIntElt -> MonStgElt", "The substring of s of length k starting at position n.", substring);
+    it.def("Substring", "s::BStgElt, n::RngIntElt, k::RngIntElt -> BStgElt", "The binary substring of s of length k starting at position n.", binary_substring);
     it.def("Index", "s::MonStgElt, t::MonStgElt -> RngIntElt", "The position of the first occurrence of t in s, or 0.", position);
     it.def("Position", "s::MonStgElt, t::MonStgElt -> RngIntElt", "The position of the first occurrence of t in s, or 0.", position);
     it.def("StringToCode", "s::MonStgElt -> RngIntElt", "The character code of the first character of s.", string_to_code);

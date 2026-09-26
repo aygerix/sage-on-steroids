@@ -42,6 +42,8 @@ pub enum Value {
     /// A complex number (an element of a complex field).
     Complex(Rc<ComplexV>),
     Str(Rc<Text>),
+    /// A binary string, stored as bytes rather than Unicode text.
+    BStr(Rc<Vec<u8>>),
     Seq(Rc<SeqEnum>),
     Set(Rc<SetEnum>),
     ISet(Rc<SetIndx>),
@@ -600,13 +602,34 @@ pub struct CopElt {
 pub struct IoObj {
     pub name: String,
     pub mode: String,
+    pub kind: IoKind,
     pub state: RefCell<IoState>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum IoKind {
+    File,
+    Pipe,
+    Socket,
 }
 
 pub enum IoState {
     Reader { data: Vec<u8>, pos: usize },
     Writer(std::fs::File),
+    PipeReader { child: std::process::Child, stdout: std::process::ChildStdout, eof: bool },
+    PipeWriter { child: std::process::Child, stdin: Option<std::process::ChildStdin> },
     Closed,
+}
+
+impl Drop for IoObj {
+    fn drop(&mut self) {
+        if let Ok(mut state) = self.state.try_borrow_mut() {
+            if let IoState::PipeWriter { child, stdin } = &mut *state {
+                stdin.take();
+                let _ = child.wait();
+            }
+        }
+    }
 }
 
 // ----- constructors and accessors -------------------------------------------
@@ -665,6 +688,10 @@ impl Value {
 
     pub fn string(s: String) -> Value {
         Value::Str(Rc::new(Text::new(s)))
+    }
+
+    pub fn bytes(s: Vec<u8>) -> Value {
+        Value::BStr(Rc::new(s))
     }
 
     /// A rational, normalised to an integer if it is integral... but kept as
@@ -731,6 +758,7 @@ impl Value {
             Value::Real(_) => t::FLD_RE_ELT,
             Value::Complex(_) => t::FLD_COM_ELT,
             Value::Str(_) => t::MON_STG_ELT,
+            Value::BStr(_) => t::B_STG_ELT,
             Value::Seq(s) if s.fact => t::RNG_INT_ELT_FACT,
             Value::Seq(_) => t::SEQ_ENUM,
             Value::Set(_) => t::SET_ENUM,
@@ -830,6 +858,10 @@ impl Hash for Value {
                 state.write_u64(c.im.hash_u64());
             }
             Value::Str(s) => s.hash(state),
+            Value::BStr(s) => {
+                state.write_u8(31);
+                s.hash(state);
+            }
             Value::Seq(s) => {
                 state.write_u8(10);
                 state.write_usize(s.elems.len());
@@ -1019,6 +1051,7 @@ impl PartialEq for Value {
             (Real(a), Real(b)) => a.x == b.x,
             (Complex(a), Complex(b)) => a.re == b.re && a.im == b.im,
             (Str(a), Str(b)) => a == b,
+            (BStr(a), BStr(b)) => a == b,
             (Seq(a), Seq(b)) => Rc::ptr_eq(a, b) || a.elems == b.elems,
             (Set(a), Set(b)) => Rc::ptr_eq(a, b) || (a.len() == b.len() && a.iter().all(|x| b.contains(&x))),
             (ISet(a), ISet(b)) => a.elems.len() == b.elems.len() && a.elems.iter().all(|x| b.elems.contains(x)),
@@ -1098,6 +1131,7 @@ pub fn natural_cmp(a: &Value, b: &Value) -> Option<Ordering> {
         (Rat(x), Int(y)) => x.as_ref().cmp(&Rational::from_integer(y)),
         (Real(x), Real(y)) => x.x.cmp(&y.x),
         (Str(x), Str(y)) => x.cmp(y),
+        (BStr(x), BStr(y)) => x.cmp(y),
         (Bool(x), Bool(y)) => x.cmp(y),
         (Infinity(x), Infinity(y)) => x.cmp(y),
         (Infinity(x), Int(_) | Rat(_) | Real(_)) => if *x { Ordering::Greater } else { Ordering::Less },

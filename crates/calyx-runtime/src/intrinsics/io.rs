@@ -1,6 +1,6 @@
 //! Input and output intrinsics: files, pipes, redirection, loading.
 
-use std::io::Write;
+use std::io::{Read as _, Write};
 use std::rc::Rc;
 
 use super::{boolv, none, one};
@@ -22,6 +22,7 @@ impl Interp {
             }
             Value::Io(io) => match &mut *io.state.borrow_mut() {
                 IoState::Writer(f) => f.write_all(text.as_bytes()).map_err(|e| RuntimeError::runtime(e.to_string())),
+                IoState::PipeWriter { stdin: Some(f), .. } => f.write_all(text.as_bytes()).map_err(|e| RuntimeError::runtime(e.to_string())),
                 _ => Err(RuntimeError::runtime("File is not open for writing")),
             },
             _ => Err(RuntimeError::runtime("Bad file argument")),
@@ -95,11 +96,25 @@ fn read_file(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
     one(Value::str(&text))
 }
 
+fn read_binary(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let name = a.str(0)?;
+    let data = std::fs::read(name).map_err(|e| RuntimeError::runtime(format!("Could not read file \"{name}\": {e}")))?;
+    one(Value::bytes(data))
+}
+
+fn write_binary(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let name = a.str(0)?;
+    let Value::BStr(data) = &a.args[1] else { unreachable!() };
+    let mut f = open_for_write(name, a.param_bool("Overwrite")?)?;
+    f.write_all(data).map_err(|e| RuntimeError::runtime(e.to_string()))?;
+    none()
+}
+
 fn open(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
     let name = a.str(0)?.to_string();
     let mode = a.str(1)?.to_string();
     let state = open_state(&name, &mode)?;
-    one(Value::Io(Rc::new(IoObj { name, mode, state: std::cell::RefCell::new(state) })))
+    one(Value::Io(Rc::new(IoObj { name, mode, kind: IoKind::File, state: std::cell::RefCell::new(state) })))
 }
 
 fn open_state(name: &str, mode: &str) -> RResult<IoState> {
@@ -115,7 +130,7 @@ fn open_test(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
     let name = a.str(0)?.to_string();
     let mode = a.str(1)?.to_string();
     match open_state(&name, &mode) {
-        Ok(state) => Ok(vals![Value::Bool(true), Value::Io(Rc::new(IoObj { name, mode, state: std::cell::RefCell::new(state) }))]),
+        Ok(state) => Ok(vals![Value::Bool(true), Value::Io(Rc::new(IoObj { name, mode, kind: IoKind::File, state: std::cell::RefCell::new(state) }))]),
         Err(_) => Ok(vals![Value::Bool(false), Value::Undef]),
     }
 }
@@ -127,58 +142,98 @@ fn io_arg(a: &CallArgs, i: usize) -> Rc<IoObj> {
     }
 }
 
+fn read_raw(io: &Rc<IoObj>, count: Option<usize>) -> RResult<Vec<u8>> {
+    let mut st = io.state.borrow_mut();
+    match &mut *st {
+        IoState::Reader { data, pos } => {
+            if *pos >= data.len() {
+                return Ok(Vec::new());
+            }
+            let end = count.map_or(data.len(), |n| pos.saturating_add(n).min(data.len()));
+            let out = data[*pos..end].to_vec();
+            *pos = end;
+            Ok(out)
+        }
+        IoState::PipeReader { child, stdout, eof } => {
+            if *eof {
+                return Ok(Vec::new());
+            }
+            let mut out = Vec::new();
+            match count {
+                Some(n) => {
+                    out.resize(n, 0);
+                    let mut got = 0;
+                    while got < n {
+                        match stdout.read(&mut out[got..]) {
+                            Ok(0) => {
+                                *eof = true;
+                                break;
+                            }
+                            Ok(k) => got += k,
+                            Err(e) => return Err(RuntimeError::runtime(e.to_string())),
+                        }
+                    }
+                    out.truncate(got);
+                }
+                None => {
+                    stdout.read_to_end(&mut out).map_err(|e| RuntimeError::runtime(e.to_string()))?;
+                    *eof = true;
+                }
+            }
+            if *eof {
+                let _ = child.wait();
+            }
+            Ok(out)
+        }
+        _ => Err(RuntimeError::runtime("File is not open for reading")),
+    }
+}
+
 fn read_io(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
     let io = io_arg(a, 0);
-    let mut st = io.state.borrow_mut();
-    let IoState::Reader { data, pos } = &mut *st else {
-        return Err(RuntimeError::runtime("File is not open for reading"));
-    };
-    if *pos >= data.len() {
+    let data = read_raw(&io, if a.args.len() > 1 { Some(a.usize(1)?) } else { None })?;
+    if data.is_empty() {
         return one(Value::str(EOF_MARKER));
     }
-    let end = if a.args.len() > 1 { (*pos + a.usize(1)?).min(data.len()) } else { data.len() };
-    let s = String::from_utf8_lossy(&data[*pos..end]).to_string();
-    *pos = end;
-    one(Value::str(&s))
+    one(Value::str(&String::from_utf8_lossy(&data)))
 }
 
 fn gets(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
     let io = io_arg(a, 0);
-    let mut st = io.state.borrow_mut();
-    let IoState::Reader { data, pos } = &mut *st else {
-        return Err(RuntimeError::runtime("File is not open for reading"));
-    };
-    if *pos >= data.len() {
+    let mut line = Vec::new();
+    let mut hit_eof = false;
+    loop {
+        let b = read_raw(&io, Some(1))?;
+        if b.is_empty() {
+            hit_eof = true;
+            break;
+        }
+        if b[0] == b'\n' {
+            break;
+        }
+        line.push(b[0]);
+    }
+    if line.is_empty() && hit_eof {
         return one(Value::str(EOF_MARKER));
     }
-    let rest = &data[*pos..];
-    let (line, adv) = match rest.iter().position(|&b| b == b'\n') {
-        Some(i) => (&rest[..i], i + 1),
-        None => (rest, rest.len()),
-    };
-    let s = String::from_utf8_lossy(line).to_string();
-    *pos += adv;
-    one(Value::str(&s))
+    one(Value::str(&String::from_utf8_lossy(&line)))
 }
 
 fn getc(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
     let io = io_arg(a, 0);
-    let mut st = io.state.borrow_mut();
-    let IoState::Reader { data, pos } = &mut *st else {
-        return Err(RuntimeError::runtime("File is not open for reading"));
-    };
-    if *pos >= data.len() {
+    let data = read_raw(&io, Some(1))?;
+    if data.is_empty() {
         return one(Value::str(EOF_MARKER));
     }
-    let c = data[*pos] as char;
-    *pos += 1;
+    let c = data[0] as char;
     one(Value::str(&c.to_string()))
 }
 
 fn ungetc(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
     let io = io_arg(a, 0);
-    if let IoState::Reader { pos, .. } = &mut *io.state.borrow_mut() {
-        *pos = pos.saturating_sub(1);
+    match &mut *io.state.borrow_mut() {
+        IoState::Reader { pos, .. } => *pos = pos.saturating_sub(1),
+        _ => return Err(RuntimeError::runtime("Channel does not support Ungetc")),
     }
     none()
 }
@@ -199,8 +254,10 @@ fn put(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
 
 fn flush(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
     if let Some(Value::Io(io)) = a.args.first() {
-        if let IoState::Writer(f) = &mut *io.state.borrow_mut() {
-            let _ = f.flush();
+        match &mut *io.state.borrow_mut() {
+            IoState::Writer(f) => f.flush().map_err(|e| RuntimeError::runtime(e.to_string()))?,
+            IoState::PipeWriter { stdin: Some(f), .. } => f.flush().map_err(|e| RuntimeError::runtime(e.to_string()))?,
+            _ => {}
         }
     }
     it.out.flush();
@@ -212,7 +269,7 @@ fn tell(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
     let p = match &mut *io.state.borrow_mut() {
         IoState::Reader { pos, .. } => *pos as i64,
         IoState::Writer(f) => std::io::Seek::stream_position(f).map(|p| p as i64).unwrap_or(0),
-        IoState::Closed => 0,
+        IoState::PipeReader { .. } | IoState::PipeWriter { .. } | IoState::Closed => 0,
     };
     one(Value::int(p))
 }
@@ -244,16 +301,45 @@ fn is_eof(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
 
 fn at_eof(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
     let io = io_arg(a, 0);
-    let r = match &*io.state.borrow() {
+    boolv(at_eof_value(&io))
+}
+
+fn at_eof_value(io: &IoObj) -> bool {
+    match &*io.state.borrow() {
         IoState::Reader { data, pos } => *pos >= data.len(),
+        IoState::PipeReader { eof, .. } => *eof,
         _ => true,
-    };
-    boolv(r)
+    }
 }
 
 fn io_type(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
-    let _ = io_arg(a, 0);
-    one(Value::str("File"))
+    let io = io_arg(a, 0);
+    one(Value::str(match io.kind {
+        IoKind::File => "file",
+        IoKind::Pipe => "pipe",
+        IoKind::Socket => "socket",
+    }))
+}
+
+fn popen(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let cmd = a.str(0)?.to_string();
+    let mode = a.str(1)?.to_string();
+    let mut command = std::process::Command::new("sh");
+    command.arg("-c").arg(&cmd);
+    let state = match mode.as_str() {
+        "r" => {
+            let mut child = command.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).spawn().map_err(|e| RuntimeError::runtime(e.to_string()))?;
+            let stdout = child.stdout.take().ok_or_else(|| RuntimeError::runtime("Could not open process output"))?;
+            IoState::PipeReader { child, stdout, eof: false }
+        }
+        "w" => {
+            let mut child = command.stdin(std::process::Stdio::piped()).spawn().map_err(|e| RuntimeError::runtime(e.to_string()))?;
+            let stdin = child.stdin.take().ok_or_else(|| RuntimeError::runtime("Could not open process input"))?;
+            IoState::PipeWriter { child, stdin: Some(stdin) }
+        }
+        _ => return Err(RuntimeError::runtime(format!("Bad mode \"{mode}\""))),
+    };
+    one(Value::Io(Rc::new(IoObj { name: cmd, mode, kind: IoKind::Pipe, state: std::cell::RefCell::new(state) })))
 }
 
 fn system(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
@@ -412,6 +498,7 @@ pub fn register(it: &mut Interp) {
         it.def_params(name, "F::MonStgElt, x::., L::MonStgElt", &ow, "Print x at print level L to the file F.", print_file);
     }
     it.def_params("PrintFileMagma", "F::MonStgElt, x::.", &ow, "Print x in Magma format to the file F.", print_file_magma);
+    it.def_params("WriteBinary", "F::MonStgElt, s::BStgElt", &ow, "Write the bytes of s to the file F.", write_binary);
     it.def_params("SetOutputFile", "F::MonStgElt", &ow, "Redirect all output to the file F.", set_output_file);
     it.def("UnsetOutputFile", "", "Send output to standard output again.", unset_output_file);
     it.def("HasOutputFile", "-> BoolElt", "Whether output is redirected to a file.", has_output_file);
@@ -419,8 +506,10 @@ pub fn register(it: &mut Interp) {
     it.def("UnsetLogFile", "", "Stop logging.", unset_log_file);
     it.def("SetEchoInput", "b::BoolElt", "Whether to echo input read from files.", set_echo_input);
     it.def("Read", "F::MonStgElt -> MonStgElt", "The contents of the file F.", read_file);
+    it.def("ReadBinary", "F::MonStgElt -> BStgElt", "The contents of the file F as a binary string.", read_binary);
     it.def("Open", "F::MonStgElt, M::MonStgElt -> IO", "Open the file F with mode \"r\", \"w\" or \"a\".", open);
     it.def("OpenTest", "F::MonStgElt, M::MonStgElt -> BoolElt, IO", "Try to open the file F; return whether this succeeded and the file.", open_test);
+    it.def("POpen", "C::MonStgElt, M::MonStgElt -> IO", "Run C and open a one-way pipe with mode \"r\" or \"w\".", popen);
     it.def("Read", "I::IO -> MonStgElt", "The remaining contents of I.", read_io);
     it.def("Read", "I::IO, n::RngIntElt -> MonStgElt", "Up to n characters from I.", read_io);
     it.def("Gets", "I::IO -> MonStgElt", "The next line of I (without its newline).", gets);
