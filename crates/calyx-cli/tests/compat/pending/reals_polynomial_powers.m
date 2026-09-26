@@ -5,6 +5,11 @@
 // exponent. Only the cases whose rounding is understood are here: squares
 // of at most eight terms (g^2, or g*g), and products by x^v*(a + b*x) or
 // x^v*(a + b*x^2).
+//
+// Known differences: Magma's squares of nine or more terms and general
+// products with three or more terms per coefficient have not been
+// identified. calyx leaves those to FLINT, which rounds each coefficient
+// once. In particular, l^16 eq l^8*l^8 is false in Magma and true in calyx.
 
 R := RealField(20); P<x> := PolynomialRing(R);
 pr := procedure(s, f)
