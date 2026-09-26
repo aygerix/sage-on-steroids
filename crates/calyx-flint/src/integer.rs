@@ -479,7 +479,20 @@ impl Integer {
     pub fn perfect_power(&self) -> Option<(Integer, u64)> {
         let mut b = Integer::zero();
         let e = unsafe { sys::fmpz_is_perfect_power(&mut b.raw, &self.raw) };
-        if e > 1 { Some((b, e as u64)) } else { None }
+        if e <= 1 {
+            return None;
+        }
+        // FLINT's root may itself be a power: 2^1001 comes as (2^143)^7.
+        let mut e = e as u64;
+        while b.cmp_abs(&Integer::one()) == Ordering::Greater {
+            let mut r = Integer::zero();
+            let k = unsafe { sys::fmpz_is_perfect_power(&mut r.raw, &b.raw) };
+            if k <= 1 {
+                break;
+            }
+            (b, e) = (r, e * k as u64);
+        }
+        Some((b, e))
     }
 
     /// Removes all factors `p` (|p| > 1) from `self`.

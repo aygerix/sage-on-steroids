@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use calyx_flint::Integer;
 
-use super::factseq::{Fact, fact_mul, fact_value, factor, flint_factor};
+use super::factseq::{Fact, fact_value, factor, flint_factor};
 use super::numtheory::{each_prime, modp, modsqrt, primes_up_to};
 use super::{arg_not, arg_range, intv, one};
 use crate::error::{RResult, RuntimeError};
@@ -15,6 +15,7 @@ use crate::random::Rng;
 use crate::value::*;
 
 pub(crate) mod arith;
+pub mod cunningham;
 mod ecm;
 mod pm1;
 mod siqs;
@@ -170,8 +171,30 @@ impl Default for Stages {
 impl Stages {
     /// The factorization of |n| (non-zero), and the composites left, which
     /// only both ECMLimit and MPQSLimit can leave. The primes that ECM and
-    /// MPQS split off are stored for later calls.
+    /// MPQS split off are stored for later calls. When |n| is b^k - 1 or
+    /// b^k + 1, its cyclotomic factors come first, with the Cunningham tables.
     fn factor(&mut self, n: &Integer, rng: &mut Rng, stored: &mut Vec<Integer>) -> (Fact, Vec<Integer>) {
+        let m = n.abs();
+        if m.bits() > 64 {
+            for (x, plus) in [(&m + 1, false), (&m - 1, true)] {
+                let Some((b, k)) = x.perfect_power() else { continue };
+                let proof = self.proof;
+                let prime = |p: &Integer| if proof { p.is_prime() } else { p.is_probable_prime() };
+                let mut rest = Vec::new();
+                let f = cunningham::factor_power(&b, k, plus, &prime, &mut |c| {
+                    let (f, r) = self.factor_general(c, rng, stored);
+                    rest.extend(r);
+                    f
+                });
+                rest.sort();
+                return (sorted_fact(f), rest);
+            }
+        }
+        self.factor_general(&m, rng, stored)
+    }
+
+    /// The factorization of |n| (non-zero) by the stages alone.
+    fn factor_general(&mut self, n: &Integer, rng: &mut Rng, stored: &mut Vec<Integer>) -> (Fact, Vec<Integer>) {
         let mut m = n.abs();
         let mut fact = Fact::new();
         if self.ecm.is_none() && self.mpqs.is_none() && self.squfof >= 20 && m.bits() <= 64 {
@@ -1111,33 +1134,6 @@ fn partial_factorization_fn(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals>
 
 // ----- Cunningham numbers ---------------------------------------------------------------------------------
 
-/// Phi_d(b), the d-th cyclotomic polynomial at b.
-fn cyclotomic_value(d: u64, b: &Integer) -> Integer {
-    let mut num = Integer::one();
-    let mut den = Integer::one();
-    for e in super::factseq::divisors_of(&factor(&Integer::from_u64(d))) {
-        let e = e.to_u64().unwrap();
-        let t = &b.pow(e) - &Integer::one();
-        match moebius(d / e) {
-            1 => num = &num * &t,
-            -1 => den = &den * &t,
-            _ => {}
-        }
-    }
-    num.divexact(&den)
-}
-
-fn moebius(n: u64) -> i32 {
-    let f = factor(&Integer::from_u64(n));
-    if f.iter().any(|(_, e)| *e > 1) {
-        0
-    } else if f.len() % 2 == 0 {
-        1
-    } else {
-        -1
-    }
-}
-
 fn cunningham(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
     let (b, k, c) = (a.int(0)?.clone(), a.int(1)?.clone(), a.int(2)?.clone());
     if b < int(2) || b > int(1073741823) {
@@ -1149,21 +1145,12 @@ fn cunningham(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
     if c != int(1) && c != int(-1) {
         return Err(RuntimeError::runtime("Argument 3 should be -1 or +1"));
     }
-    let k = k.to_u64().unwrap();
-    // b^k - 1 is the product of Phi_d(b) over d | k, and b^k + 1 that over
-    // the d dividing 2k but not k.
-    let ds: Vec<u64> = if c.sign() < 0 {
-        super::factseq::divisors_of(&factor(&Integer::from_u64(k))).into_iter().map(|d| d.to_u64().unwrap()).collect()
-    } else {
-        super::factseq::divisors_of(&factor(&Integer::from_u64(2 * k))).into_iter().map(|d| d.to_u64().unwrap()).filter(|d| k % d != 0).collect()
-    };
-    let mut f = Fact::new();
-    for d in ds {
-        let v = cyclotomic_value(d, &b);
-        if !v.is_one() {
-            f = fact_mul(&f, &factor(&v))?;
-        }
-    }
+    // The primes are only probable primes, as in Magma.
+    let mut stages = Stages { proof: false, ..Stages::default() };
+    let (mut rng, mut stored) = (Rng::new(1), Vec::new());
+    let f = cunningham::factor_power(&b, k.to_u64().unwrap(), c.sign() > 0, &|p| p.is_probable_prime(), &mut |m| {
+        stages.factor_general(m, &mut rng, &mut stored).0
+    });
     one(fact_value(&sorted_fact(f)))
 }
 
@@ -1332,7 +1319,7 @@ mod tests {
         let mut f = Fact::new();
         for _ in 0..next(s) % 5 {
             let b = 2 + next(s) as u32 % (bits - 1);
-            f = fact_mul(&f, &vec![(Integer::from_u64(next(s) >> (64 - b)).next_prime(), 1 + next(s) % 3)]).unwrap();
+            f = super::super::factseq::fact_mul(&f, &vec![(Integer::from_u64(next(s) >> (64 - b)).next_prime(), 1 + next(s) % 3)]).unwrap();
         }
         f
     }
@@ -1410,7 +1397,7 @@ mod tests {
             for k in 1..=40u64 {
                 let product = super::super::factseq::divisors_of(&factor(&Integer::from_u64(k)))
                     .iter()
-                    .fold(int(1), |t, d| &t * &cyclotomic_value(d.to_u64().unwrap(), &b));
+                    .fold(int(1), |t, d| &t * &cunningham::cyclotomic_value(d.to_u64().unwrap(), &b));
                 assert_eq!(product, &b.pow(k) - &int(1), "{b}^{k} - 1");
             }
         }
