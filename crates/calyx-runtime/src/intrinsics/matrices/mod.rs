@@ -23,6 +23,7 @@ mod change;
 mod charpoly;
 mod creation;
 mod linalg;
+mod misc;
 mod numerical;
 mod order;
 mod predicates;
@@ -418,6 +419,7 @@ pub fn register(it: &mut Interp) {
     charpoly::register(it);
     canonical::register(it);
     order::register(it);
+    misc::register(it);
     predicates::register(it);
     spaces::register(it);
     vectors::register(it);
