@@ -291,6 +291,13 @@ impl Ctx {
         unsafe { (*self.ptr()).sizeof_elem as usize }
     }
 
+    /// Whether the elements are plain words, all zero for zero and with
+    /// nothing to free (packed finite fields): `Elem` makes, copies and
+    /// drops them without calling FLINT.
+    fn plain(&self) -> bool {
+        matches!(self.kind, CtxKind::FqPacked { .. })
+    }
+
     pub fn is_field(&self) -> Truth {
         Truth::from_raw(unsafe { sys::gr_ctx_is_field(self.ptr()) })
     }
@@ -342,6 +349,7 @@ enum Data {
 impl Drop for Elem {
     fn drop(&mut self) {
         match self.data {
+            Data::Inline(_) if self.ctx.plain() => {}
             Data::Inline(_) => unsafe { sys::gr_clear(self.as_mut_ptr(), self.ctx.ptr()) },
             Data::Heap(p) => unsafe { sys::gr_heap_clear(p.as_ptr(), self.ctx.ptr()) },
         }
@@ -350,6 +358,9 @@ impl Drop for Elem {
 
 impl Clone for Elem {
     fn clone(&self) -> Elem {
+        if let (true, Data::Inline(w)) = (self.ctx.plain(), &self.data) {
+            return Elem { ctx: self.ctx.clone(), data: Data::Inline(*w) };
+        }
         let mut e = Elem::new(&self.ctx);
         let st = unsafe { sys::gr_set(e.as_mut_ptr(), self.as_ptr(), self.ctx.ptr()) };
         assert_eq!(st, 0, "gr_set failed");
@@ -403,7 +414,9 @@ impl Elem {
     pub fn new(ctx: &Rc<Ctx>) -> Elem {
         if ctx.elem_size() <= INLINE_WORDS * 8 {
             let mut e = Elem { ctx: ctx.clone(), data: Data::Inline([0; INLINE_WORDS]) };
-            unsafe { sys::gr_init(e.as_mut_ptr(), ctx.ptr()) };
+            if !ctx.plain() {
+                unsafe { sys::gr_init(e.as_mut_ptr(), ctx.ptr()) };
+            }
             return e;
         }
         let p = unsafe { sys::gr_heap_init(ctx.ptr()) };
