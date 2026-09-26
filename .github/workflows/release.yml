@@ -4,6 +4,8 @@ name: Release artifacts
 on:
   workflow_dispatch:
   push:
+    branches:
+      - lane/build
     tags:
       - 'v*'
 
@@ -17,23 +19,76 @@ env:
   OPENBLAS_NUM_THREADS: 1
 
 jobs:
-  linux:
-    name: archive (${{ matrix.target }})
-    runs-on: ${{ matrix.runner }}
+  linux-x86-64:
+    name: archive (linux-x86-64)
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: linux-x86-64
-            runner: ubuntu-24.04
-            flint: linux-x86-64
-          - target: linux-x86-64-avx2
-            runner: ubuntu-24.04
-            flint: linux-x86-64-avx2
-          - target: linux-arm64
-            runner: ubuntu-24.04-arm
-            flint: linux-arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libgmp-dev libmpfr-dev libopenblas-dev patchelf
+
+      - name: Cache FLINT
+        id: flint
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/flint
+            ~/flint-avx2
+          key: release-flint-${{ env.FLINT_VERSION }}-linux-x86-64-hwcaps-${{ hashFiles('build/flint/**') }}
+
+      - name: Build FLINT variants
+        if: steps.flint.outputs.cache-hit != 'true'
+        env:
+          FLINT_TARBALL_URL: https://github.com/flintlib/flint/releases/download/v${{ env.FLINT_VERSION }}/flint-${{ env.FLINT_VERSION }}.tar.gz
+        run: |
+          build/flint/linux-x86-64.sh "$HOME/flint"
+          build/flint/linux-x86-64-avx2.sh "$HOME/flint-avx2"
+
+      - name: Use FLINT
+        run: |
+          echo "PKG_CONFIG_PATH=$HOME/flint/lib/pkgconfig" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$HOME/flint/lib" >> "$GITHUB_ENV"
+          avx2_cflags=$(PKG_CONFIG_PATH="$HOME/flint-avx2/lib/pkgconfig" pkg-config --variable=calyx_cflags flint)
+          echo "CALYX_FLINT_AVX2_CFLAGS=$avx2_cflags" >> "$GITHUB_ENV"
+
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-linux-x86-64
+
+      - name: Build archive
+        run: |
+          cargo build --release
+          package="$RUNNER_TEMP/calyx-linux-x86-64"
+          build/package/linux.sh target/release/calyx "$package" "$HOME/flint-avx2/lib"
+          mkdir -p dist
+          tar -C "$RUNNER_TEMP" -czf dist/calyx-linux-x86-64.tar.gz calyx-linux-x86-64
+
+      - name: Check archive on a clean system
+        run: |
+          check="$RUNNER_TEMP/check-linux-x86-64"
+          mkdir "$check"
+          tar -C "$check" -xzf dist/calyx-linux-x86-64.tar.gz
+          package="$check/calyx-linux-x86-64"
+          docker run --rm \
+            -v "$PWD/build/package/check-linux.sh:/check-linux.sh:ro" \
+            -v "$package:/opt/calyx:ro" \
+            ubuntu:24.04 bash /check-linux.sh /opt/calyx
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: calyx-linux-x86-64
+          path: dist/calyx-linux-x86-64.tar.gz
+          if-no-files-found: error
+
+  linux-arm64:
+    name: archive (linux-arm64)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
 
@@ -45,13 +100,13 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/flint
-          key: release-flint-${{ env.FLINT_VERSION }}-${{ matrix.flint }}-${{ hashFiles('build/flint/**') }}
+          key: release-flint-${{ env.FLINT_VERSION }}-linux-arm64-${{ hashFiles('build/flint/**') }}
 
       - name: Build FLINT
         if: steps.flint.outputs.cache-hit != 'true'
         env:
           FLINT_TARBALL_URL: https://github.com/flintlib/flint/releases/download/v${{ env.FLINT_VERSION }}/flint-${{ env.FLINT_VERSION }}.tar.gz
-        run: build/flint/${{ matrix.flint }}.sh "$HOME/flint"
+        run: build/flint/linux-arm64.sh "$HOME/flint"
 
       - name: Use FLINT
         run: |
@@ -63,22 +118,22 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: release-${{ matrix.target }}
+          key: release-linux-arm64
 
       - name: Build archive
         run: |
           cargo build --release
-          package="$RUNNER_TEMP/calyx-${{ matrix.target }}"
+          package="$RUNNER_TEMP/calyx-linux-arm64"
           build/package/linux.sh target/release/calyx "$package"
           mkdir -p dist
-          tar -C "$RUNNER_TEMP" -czf "dist/calyx-${{ matrix.target }}.tar.gz" "calyx-${{ matrix.target }}"
+          tar -C "$RUNNER_TEMP" -czf dist/calyx-linux-arm64.tar.gz calyx-linux-arm64
 
       - name: Check archive on a clean system
         run: |
-          check="$RUNNER_TEMP/check-${{ matrix.target }}"
+          check="$RUNNER_TEMP/check-linux-arm64"
           mkdir "$check"
-          tar -C "$check" -xzf "dist/calyx-${{ matrix.target }}.tar.gz"
-          package="$check/calyx-${{ matrix.target }}"
+          tar -C "$check" -xzf dist/calyx-linux-arm64.tar.gz
+          package="$check/calyx-linux-arm64"
           docker run --rm \
             -v "$PWD/build/package/check-linux.sh:/check-linux.sh:ro" \
             -v "$package:/opt/calyx:ro" \
@@ -86,8 +141,8 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: calyx-${{ matrix.target }}
-          path: dist/calyx-${{ matrix.target }}.tar.gz
+          name: calyx-linux-arm64
+          path: dist/calyx-linux-arm64.tar.gz
           if-no-files-found: error
 
   macos:
