@@ -4,8 +4,6 @@ name: Release artifacts
 on:
   workflow_dispatch:
   push:
-    branches:
-      - lane/build
     tags:
       - 'v*'
 
