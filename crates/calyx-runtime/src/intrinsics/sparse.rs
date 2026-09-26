@@ -109,6 +109,14 @@ impl SparseMatrix {
         out
     }
 
+    fn row_entries(&self, it: &Interp, i: usize) -> Vec<(usize, Value)> {
+        match &self.rows {
+            Rows::Integers(rows) => rows[i].iter().map(|(j, x)| (*j, Value::Int(x.clone()))).collect(),
+            Rows::Words(rows) => rows[i].iter().map(|(j, x)| (*j, it.elem_to_value(self.ring(), Elem::from_word(&self.info().ctx, *x)))).collect(),
+            Rows::Generic(rows) => rows[i].iter().map(|(j, x)| (*j, it.elem_to_value(self.ring(), x.clone()))).collect(),
+        }
+    }
+
     pub fn same_as(&self, other: &SparseMatrix) -> bool {
         if self.nrows != other.nrows || self.ncols != other.ncols || self.ring() != other.ring() {
             return false;
@@ -597,19 +605,23 @@ fn dense_matrix(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
     one(crate::intrinsics::matrices::mat_value(it, x.ring(), x.dense())?)
 }
 
-fn from_dense(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
-    let Value::Mat(x) = &a.args[0] else { return Err(bad()) };
-    let Value::Sparse(mut out) = new_value(it, x.ring(), x.m.nrows(), x.m.ncols())? else { unreachable!() };
-    for i in 0..x.m.nrows() {
-        for j in 0..x.m.ncols() {
-            if x.m.entry_is_zero(i, j) {
+fn sparse_from_mat(it: &mut Interp, ring: &Value, m: &Mat) -> RResult<Value> {
+    let Value::Sparse(mut out) = new_value(it, ring, m.nrows(), m.ncols())? else { unreachable!() };
+    for i in 0..m.nrows() {
+        for j in 0..m.ncols() {
+            if m.entry_is_zero(i, j) {
                 continue;
             }
-            let e = crate::intrinsics::matrices::entry_value(it, x, i, j);
+            let e = crate::intrinsics::matrices::entry_of(it, ring, m, i, j);
             Rc::make_mut(&mut out).set(it, i, j, &e)?;
         }
     }
-    one(Value::Sparse(out))
+    Ok(Value::Sparse(out))
+}
+
+fn from_dense(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let Value::Mat(x) = &a.args[0] else { return Err(bad()) };
+    one(sparse_from_mat(it, x.ring(), &x.m)?)
 }
 
 fn changed_ring(it: &mut Interp, x: &SparseMatrix, ring: &Value) -> RResult<Value> {
@@ -632,6 +644,220 @@ fn sparse_over(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
     let ring = ring_arg(a, 0)?;
     let x = sparse_arg(a, 1)?;
     one(changed_ring(it, &x, &ring)?)
+}
+
+fn square_matrix(a: &CallArgs) -> RResult<Rc<SparseMatrix>> {
+    let m = sparse_arg(a, 0)?;
+    if m.nrows != m.ncols {
+        return Err(RuntimeError::runtime("Argument 1 is not square"));
+    }
+    Ok(m)
+}
+
+fn same_entry(it: &mut Interp, a: Value, b: Value) -> RResult<bool> {
+    Ok(matches!(it.compare_eq(&a, &b, true)?, Some(true)))
+}
+
+pub fn equal(it: &mut Interp, a: &Value, b: &Value) -> RResult<bool> {
+    let (Value::Sparse(x), Value::Sparse(y)) = (a, b) else {
+        return Err(RuntimeError::runtime(format!("Bad argument types\nArgument types given: {}, {}", it.type_name_ext(a), it.type_name_ext(b))));
+    };
+    if x.nrows != y.nrows || x.ncols != y.ncols {
+        return Ok(false);
+    }
+    if x.ring() == y.ring() {
+        return Ok(x.same_as(y));
+    }
+    Err(RuntimeError::runtime("Arguments have incompatible coefficient rings"))
+}
+
+fn is_zero(_: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    one(Value::Bool(sparse_arg(a, 0)?.nnz() == 0))
+}
+
+fn identity_test(it: &mut Interp, a: &mut CallArgs, sign: i64) -> RResult<Vals> {
+    let m = square_matrix(a)?;
+    if m.nnz() != m.nrows {
+        return one(Value::Bool(false));
+    }
+    for i in 0..m.nrows {
+        if m.columns(i) != [i] || !same_entry(it, m.entry(it, i, i), Value::int(sign))? {
+            return one(Value::Bool(false));
+        }
+    }
+    one(Value::Bool(true))
+}
+
+fn is_one(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    identity_test(it, a, 1)
+}
+
+fn is_minus_one(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    identity_test(it, a, -1)
+}
+
+fn is_diagonal(_: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let m = square_matrix(a)?;
+    one(Value::Bool((0..m.nrows).all(|i| m.columns(i).into_iter().all(|j| i == j))))
+}
+
+fn is_scalar(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let m = square_matrix(a)?;
+    if (0..m.nrows).any(|i| m.columns(i).into_iter().any(|j| i != j)) {
+        return one(Value::Bool(false));
+    }
+    if m.nrows < 2 {
+        return one(Value::Bool(true));
+    }
+    let x = m.entry(it, 0, 0);
+    for i in 1..m.nrows {
+        if !same_entry(it, x.clone(), m.entry(it, i, i))? {
+            return one(Value::Bool(false));
+        }
+    }
+    one(Value::Bool(true))
+}
+
+fn is_symmetric(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let m = square_matrix(a)?;
+    for (i, j, x) in m.entries(it) {
+        if !same_entry(it, x, m.entry(it, j, i))? {
+            return one(Value::Bool(false));
+        }
+    }
+    one(Value::Bool(true))
+}
+
+fn is_upper(_: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let m = sparse_arg(a, 0)?;
+    one(Value::Bool((0..m.nrows).all(|i| m.columns(i).into_iter().all(|j| i <= j))))
+}
+
+fn is_lower(_: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let m = sparse_arg(a, 0)?;
+    one(Value::Bool((0..m.nrows).all(|i| m.columns(i).into_iter().all(|j| i >= j))))
+}
+
+fn compatible(a: &SparseMatrix, b: &SparseMatrix, product: bool) -> RResult<()> {
+    let dimensions = if product { a.ncols == b.nrows } else { a.nrows == b.nrows && a.ncols == b.ncols };
+    if !dimensions {
+        return Err(RuntimeError::runtime("Arguments have incompatible degrees"));
+    }
+    if a.ring() != b.ring() {
+        return Err(RuntimeError::runtime("Arguments have incompatible coefficient rings"));
+    }
+    Ok(())
+}
+
+fn add_matrices(it: &mut Interp, a: &SparseMatrix, b: &SparseMatrix, subtract: bool) -> RResult<Value> {
+    compatible(a, b, false)?;
+    let mut out = Rc::new(a.clone());
+    for (i, j, mut x) in b.entries(it) {
+        if subtract {
+            x = it.negate(x)?;
+        }
+        let y = out.entry(it, i, j);
+        let sum = add_values(it, y, x)?;
+        Rc::make_mut(&mut out).set(it, i, j, &sum)?;
+    }
+    Ok(Value::Sparse(out))
+}
+
+fn multiply_matrices(it: &mut Interp, a: &SparseMatrix, b: &SparseMatrix) -> RResult<Value> {
+    compatible(a, b, true)?;
+    let Value::Sparse(mut out) = new_value(it, a.ring(), a.nrows, b.ncols)? else { unreachable!() };
+    for i in 0..a.nrows {
+        let mut sums: FxHashMap<usize, Value> = FxHashMap::default();
+        for (k, x) in a.row_entries(it, i) {
+            for (j, y) in b.row_entries(it, k) {
+                let xy = mul_values(it, x.clone(), y)?;
+                let sum = match sums.remove(&j) {
+                    Some(z) => add_values(it, z, xy)?,
+                    None => xy,
+                };
+                sums.insert(j, sum);
+            }
+        }
+        let mut sums: Vec<(usize, Value)> = sums.into_iter().collect();
+        sums.sort_unstable_by_key(|e| e.0);
+        for (j, x) in sums {
+            Rc::make_mut(&mut out).set(it, i, j, &x)?;
+        }
+    }
+    Ok(Value::Sparse(out))
+}
+
+fn scale_matrix(it: &mut Interp, a: &SparseMatrix, scalar: &Value) -> RResult<Value> {
+    let scalar = scalar_value(it, a, scalar)?;
+    let Value::Sparse(mut out) = new_value(it, a.ring(), a.nrows, a.ncols)? else { unreachable!() };
+    for (i, j, x) in a.entries(it) {
+        let y = mul_values(it, scalar.clone(), x)?;
+        Rc::make_mut(&mut out).set(it, i, j, &y)?;
+    }
+    Ok(Value::Sparse(out))
+}
+
+pub fn negate(it: &mut Interp, a: &SparseMatrix) -> RResult<Value> {
+    scale_matrix(it, a, &Value::int(-1))
+}
+
+fn transposed(it: &mut Interp, a: &SparseMatrix) -> RResult<Value> {
+    let Value::Sparse(mut out) = new_value(it, a.ring(), a.ncols, a.nrows)? else { unreachable!() };
+    for (i, j, x) in a.entries(it) {
+        Rc::make_mut(&mut out).set(it, j, i, &x)?;
+    }
+    Ok(Value::Sparse(out))
+}
+
+fn identity_like(it: &mut Interp, a: &SparseMatrix) -> RResult<Value> {
+    diagonal(it, a.ring(), a.nrows, &vec![Value::int(1); a.nrows])
+}
+
+fn power(it: &mut Interp, a: &SparseMatrix, n: &Integer) -> RResult<Value> {
+    if a.nrows != a.ncols {
+        return Err(RuntimeError::runtime("Argument 1 is not square"));
+    }
+    if n.sign() < 0 {
+        let inv = a.dense().inv().map_err(|_| RuntimeError::runtime("Argument 1 is not invertible"))?;
+        let Value::Sparse(inv) = sparse_from_mat(it, a.ring(), &inv)? else { unreachable!() };
+        return power(it, &inv, &-n);
+    }
+    let Some(mut e) = n.to_u64() else { return Err(RuntimeError::runtime(format!("Argument 2 ({n}) is too large"))) };
+    let Value::Sparse(mut result) = identity_like(it, a)? else { unreachable!() };
+    let mut base = Rc::new(a.clone());
+    while e != 0 {
+        if e & 1 == 1 {
+            let Value::Sparse(x) = multiply_matrices(it, &result, &base)? else { unreachable!() };
+            result = x;
+        }
+        e >>= 1;
+        if e != 0 {
+            let Value::Sparse(x) = multiply_matrices(it, &base, &base)? else { unreachable!() };
+            base = x;
+        }
+    }
+    Ok(Value::Sparse(result))
+}
+
+pub fn binop(it: &mut Interp, op: BinOp, a: &Value, b: &Value) -> RResult<Option<Value>> {
+    use BinOp::*;
+    match (op, a, b) {
+        (Eq | Ne, Value::Sparse(_), Value::Sparse(_)) => {
+            let e = equal(it, a, b)?;
+            Ok(Some(Value::Bool(e == (op == Eq))))
+        }
+        (Add | Sub, Value::Sparse(x), Value::Sparse(y)) => Ok(Some(add_matrices(it, x, y, op == Sub)?)),
+        (Mul, Value::Sparse(x), Value::Sparse(y)) => Ok(Some(multiply_matrices(it, x, y)?)),
+        (Mul, Value::Sparse(x), y) if !matches!(y, Value::Sparse(_) | Value::Mat(_)) => Ok(Some(scale_matrix(it, x, y)?)),
+        (Mul, x, Value::Sparse(y)) if !matches!(x, Value::Sparse(_) | Value::Mat(_)) => Ok(Some(scale_matrix(it, y, x)?)),
+        (Pow, Value::Sparse(x), Value::Int(n)) => Ok(Some(power(it, x, n)?)),
+        _ => Ok(None),
+    }
+}
+
+fn transpose(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let m = sparse_arg(a, 0)?;
+    one(transposed(it, &m)?)
 }
 
 fn set_entry_proc(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
@@ -1101,4 +1327,13 @@ pub fn register(it: &mut Interp) {
     it.def("SparseMatrix", "A::Mtrx -> MtrxSprs", "The sparse matrix equal to A.", from_dense);
     it.def("ChangeRing", "A::MtrxSprs, R::Rng -> MtrxSprs", "A with its entries coerced into R.", change_ring);
     it.def("SparseMatrix", "R::Rng, A::MtrxSprs -> MtrxSprs", "The sparse matrix over R with the entries of A.", sparse_over);
+    it.def("IsZero", "A::MtrxSprs -> BoolElt", "Whether A is zero.", is_zero);
+    it.def("IsOne", "A::MtrxSprs -> BoolElt", "Whether A is the identity.", is_one);
+    it.def("IsMinusOne", "A::MtrxSprs -> BoolElt", "Whether A is minus the identity.", is_minus_one);
+    it.def("IsScalar", "A::MtrxSprs -> BoolElt", "Whether A is scalar.", is_scalar);
+    it.def("IsDiagonal", "A::MtrxSprs -> BoolElt", "Whether A is diagonal.", is_diagonal);
+    it.def("IsSymmetric", "A::MtrxSprs -> BoolElt", "Whether A is symmetric.", is_symmetric);
+    it.def("IsUpperTriangular", "A::MtrxSprs -> BoolElt", "Whether A is upper triangular.", is_upper);
+    it.def("IsLowerTriangular", "A::MtrxSprs -> BoolElt", "Whether A is lower triangular.", is_lower);
+    it.def("Transpose", "A::MtrxSprs -> MtrxSprs", "The transpose of A.", transpose);
 }
