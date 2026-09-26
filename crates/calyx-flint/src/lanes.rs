@@ -22,6 +22,11 @@ use std::cell::OnceCell;
 pub trait Lane: Copy + Eq + Default + std::fmt::Debug + 'static {
     fn get(self) -> u32;
     fn of(x: u32) -> Self;
+    /// self - y modulo p, for self and y below p, in the lane's own width
+    /// (which the compiler vectorizes well, unlike widened sums).
+    fn sub_mod(self, y: Self, p: Self) -> Self;
+    /// self + y modulo p, as self - (p - y).
+    fn add_mod(self, y: Self, p: Self) -> Self;
 }
 
 impl Lane for u8 {
@@ -34,6 +39,17 @@ impl Lane for u8 {
     fn of(x: u32) -> u8 {
         x as u8
     }
+
+    #[inline(always)]
+    fn sub_mod(self, y: u8, p: u8) -> u8 {
+        let (r, borrow) = self.overflowing_sub(y);
+        if borrow { r.wrapping_add(p) } else { r }
+    }
+
+    #[inline(always)]
+    fn add_mod(self, y: u8, p: u8) -> u8 {
+        self.sub_mod(p - y, p)
+    }
 }
 
 impl Lane for u16 {
@@ -45,6 +61,17 @@ impl Lane for u16 {
     #[inline(always)]
     fn of(x: u32) -> u16 {
         x as u16
+    }
+
+    #[inline(always)]
+    fn sub_mod(self, y: u16, p: u16) -> u16 {
+        let (r, borrow) = self.overflowing_sub(y);
+        if borrow { r.wrapping_add(p) } else { r }
+    }
+
+    #[inline(always)]
+    fn add_mod(self, y: u16, p: u16) -> u16 {
+        self.sub_mod(p - y, p)
     }
 }
 
@@ -644,24 +671,18 @@ impl<T: Lane, const N: usize> FpLanes<T, N> {
     }
 
     pub fn add(&self, a: &[T; N], b: &[T; N]) -> [T; N] {
-        let p = self.b.p as u32;
-        array::from_fn(|i| {
-            let s = a[i].get() + b[i].get();
-            T::of(if s >= p { s - p } else { s })
-        })
+        let p = T::of(self.b.p as u32);
+        array::from_fn(|i| a[i].add_mod(b[i], p))
     }
 
     pub fn sub(&self, a: &[T; N], b: &[T; N]) -> [T; N] {
-        let p = self.b.p as u32;
-        array::from_fn(|i| {
-            let (x, y) = (a[i].get(), b[i].get());
-            T::of(if x >= y { x - y } else { x + p - y })
-        })
+        let p = T::of(self.b.p as u32);
+        array::from_fn(|i| a[i].sub_mod(b[i], p))
     }
 
     pub fn neg(&self, a: &[T; N]) -> [T; N] {
-        let p = self.b.p as u32;
-        array::from_fn(|i| T::of(if a[i].get() == 0 { 0 } else { p - a[i].get() }))
+        let p = T::of(self.b.p as u32);
+        array::from_fn(|i| T::default().sub_mod(a[i], p))
     }
 
     /// a*c for c below p.
