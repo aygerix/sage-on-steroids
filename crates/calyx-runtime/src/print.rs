@@ -332,7 +332,7 @@ fn needs_newline(v: &Value) -> bool {
     match v {
         Value::Seq(_) | Value::Set(_) | Value::ISet(_) | Value::MSet(_) | Value::Struct(_) | Value::Rec(_) => true,
         Value::Elt(e) => elt_is_compound(e),
-        Value::Perm(_) | Value::AbElt(_) | Value::Map(_) | Value::Nfd(_) | Value::Drch(_) | Value::Mat(_) => true,
+        Value::Perm(_) | Value::AbElt(_) | Value::Map(_) | Value::Nfd(_) | Value::Drch(_) | Value::Mat(_) | Value::Sparse(_) => true,
         Value::Tuple(t) => t.elems.iter().any(needs_newline),
         _ => false,
     }
@@ -736,6 +736,7 @@ impl Interp {
                 let m = m.clone();
                 crate::intrinsics::matrices::fmt_matrix(self, p, &m, indent)?;
             }
+            Value::Sparse(m) => crate::intrinsics::sparse::fmt_matrix(self, p, m, indent)?,
             Value::Infinity(pos) => p.write(match (p.level == Level::Magma, *pos) {
                 (false, true) => "Infinity",
                 (false, false) => "-Infinity",
@@ -955,6 +956,7 @@ impl Interp {
                 p.empty_line();
             }
             StructKind::Matrices(_) => crate::intrinsics::matrices::fmt_parent(self, p, s, indent)?,
+            StructKind::SparseMatrices(_) => crate::intrinsics::sparse::fmt_parent(self, p, s, indent)?,
             // Magma's package code prints nearfields (without the order at
             // the minimal level), and what it prints does not count toward
             // the width of the line: the line counts as empty after it.
@@ -1281,4 +1283,3 @@ pub fn trim_real(s: &str) -> String {
     let m = if m.is_empty() || m == "-" { "0" } else { m };
     format!("{m}{exp}")
 }
-

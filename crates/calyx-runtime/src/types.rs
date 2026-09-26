@@ -133,6 +133,10 @@ builtin_types! {
     RNG_MPOL_RES_ELT = "RngMPolResElt": [RNG_ELT],
 
     // Real and complex fields (#42).
+
+    // Sparse matrices (#77).
+    MTRX_SPRS_STR = "MtrxSprsStr": [STR],
+    MTRX_SPRS = "MtrxSprs": [MTRX],
 }
 
 #[derive(Clone, Debug)]
@@ -210,6 +214,9 @@ impl TypeRegistry {
             (t::RNG_MPOL_RES, t::RNG_MPOL_RES_ELT),
 
             // Real and complex fields (#42).
+
+            // Sparse matrices (#77).
+            (t::MTRX_SPRS_STR, t::MTRX_SPRS),
         ];
         for (s, e) in elts {
             r.types[s.0 as usize].elt_type = Some(e);
