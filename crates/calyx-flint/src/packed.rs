@@ -58,6 +58,14 @@ pub(crate) trait Kernel: 'static {
     /// are zero).
     fn coords(&self, a: &Self::E) -> Vec<u64>;
     fn from_coords(&self, c: &[u64]) -> Self::E;
+    /// The n coordinates of a written to `out`.
+    fn coords_into(&self, a: &Self::E, out: &mut [u64]);
+    /// The element c_0 + c_1 x + ... for at most 2n - 1 coefficients c_i
+    /// below p, reduced modulo the modulus.
+    fn reduce_coeffs(&self, c: &[u64]) -> Self::E;
+    /// The length of the shorter factor from which products of polynomials
+    /// go by Kronecker substitution (see `poly_mullow`).
+    fn ks_cutoff(&self) -> usize;
 }
 
 impl<const W: usize> Kernel for Gf2Words<W> {
@@ -133,6 +141,22 @@ impl<const W: usize> Kernel for Gf2Words<W> {
         }
         r
     }
+
+    fn coords_into(&self, a: &[u64; W], out: &mut [u64]) {
+        for (i, x) in out.iter_mut().enumerate() {
+            *x = a[i / 64] >> (i % 64) & 1;
+        }
+    }
+
+    fn reduce_coeffs(&self, c: &[u64]) -> [u64; W] {
+        Gf2Words::reduce_coeffs(self, c)
+    }
+
+    /// A bit takes a word in FLINT's polynomials over F_2, so substitution
+    /// pays only for long products.
+    fn ks_cutoff(&self) -> usize {
+        3 * self.degree() as usize
+    }
 }
 
 impl<T: Lane, const N: usize> Kernel for FpLanes<T, N> {
@@ -200,6 +224,20 @@ impl<T: Lane, const N: usize> Kernel for FpLanes<T, N> {
 
     fn from_coords(&self, c: &[u64]) -> [T; N] {
         FpLanes::from_coords(self, c)
+    }
+
+    fn coords_into(&self, a: &[T; N], out: &mut [u64]) {
+        for (x, y) in out.iter_mut().zip(a) {
+            *x = y.get() as u64;
+        }
+    }
+
+    fn reduce_coeffs(&self, c: &[u64]) -> [T; N] {
+        FpLanes::reduce_coeffs(self, c)
+    }
+
+    fn ks_cutoff(&self) -> usize {
+        6
     }
 }
 
@@ -574,6 +612,53 @@ unsafe extern "C" fn sqrt(r: *mut c_void, x: *const c_void, ctx: GrCtx) -> c_int
     st
 }
 
+/// The first `len` coefficients of the product of the polynomials a and b
+/// of lengths la and lb, by Kronecker substitution: the coordinates of
+/// their coefficients 2n - 1 apart in polynomials over F_p, whose product
+/// FLINT finds (by FFT when they are long), then each block of 2n - 1
+/// coefficients of it reduced modulo the modulus. Short products take
+/// FLINT's generic algorithm, product by product of coefficients.
+unsafe extern "C" fn poly_mullow<K: Kernel>(
+    res: *mut c_void,
+    a: *const c_void,
+    la: sys::slong,
+    b: *const c_void,
+    lb: sys::slong,
+    len: sys::slong,
+    ctx: GrCtx,
+) -> c_int {
+    let pk = unsafe { packed::<K>(ctx) };
+    if (la.min(lb) as usize) < pk.k.ks_cutoff() || len < 1 {
+        return unsafe { sys::_gr_poly_mullow_generic(res, a, la, b, lb, len, ctx) };
+    }
+    let (n, s) = (pk.head.n as usize, 2 * pk.head.n as usize - 1);
+    let spread = |x: *const c_void, l: usize| {
+        let mut v = vec![0u64; (l - 1) * s + n];
+        for i in 0..l {
+            let e = unsafe { get::<K>((x as *const K::E).add(i).cast()) };
+            pk.k.coords_into(&e, &mut v[i * s..i * s + n]);
+        }
+        v
+    };
+    let (x, y) = (spread(a, la as usize), if a == b && la == lb { Vec::new() } else { spread(b, lb as usize) });
+    // FLINT squares when both factors are one, and wants the longer first.
+    let (x, y) = match y.is_empty() {
+        true => (&x, &x),
+        false if x.len() < y.len() => (&y, &x),
+        false => (&x, &y),
+    };
+    let mut md = sys::nmod_t::default();
+    let mut c = vec![0u64; len as usize * s];
+    unsafe {
+        sys::nmod_init(&mut md, pk.head.p as sys::ulong);
+        sys::_nmod_poly_mullow(c.as_mut_ptr(), x.as_ptr(), x.len() as sys::slong, y.as_ptr(), y.len() as sys::slong, c.len() as sys::slong, md);
+    }
+    for (k, block) in c.chunks_exact(s).enumerate() {
+        unsafe { put::<K>((res as *mut K::E).add(k).cast(), pk.k.reduce_coeffs(block)) };
+    }
+    SUCCESS
+}
+
 unsafe extern "C" fn poly_roots(
     roots: *mut sys::gr_vec_struct,
     mult: *mut sys::gr_vec_struct,
@@ -677,6 +762,7 @@ fn methods<K: Kernel>() -> Vec<sys::gr_method_tab_input> {
         m(sys::gr_method_GR_METHOD_FQ_TRACE, trace::<K> as *const ()),
         m(sys::gr_method_GR_METHOD_FQ_IS_PRIMITIVE, is_primitive as *const ()),
         m(sys::gr_method_GR_METHOD_FQ_PTH_ROOT, pth_root::<K> as *const ()),
+        m(sys::gr_method_GR_METHOD_POLY_MULLOW, poly_mullow::<K> as *const ()),
         m(sys::gr_method_GR_METHOD_POLY_ROOTS, poly_roots as *const ()),
         sys::gr_method_tab_input { index: 0, function: None },
     ]
@@ -1224,6 +1310,50 @@ mod tests {
         }
         for (p, cs) in [(2, vec![1; 514]), (3, vec![1; 66]), (257, vec![1; 34]), (65537, vec![1, 0, 1]), (9, vec![1, 0, 1]), (3, vec![1, 0, 2])] {
             assert_eq!(Ctx::packed_field(p, &cs).err(), Some(GrError::Unable));
+        }
+    }
+
+    /// Products of polynomials by Kronecker substitution against FLINT's
+    /// generic ones, coefficient by coefficient, truncated or not, and for
+    /// squares.
+    #[test]
+    fn polynomial_products_by_kronecker_substitution() {
+        let mut rng = Lcg(0x2545_f491_4f6c_dd1d);
+        for (p, n) in [(2u64, 20usize), (2, 64), (2, 100), (3, 1), (3, 12), (7, 30), (251, 10), (257, 3), (65521, 4)] {
+            let cs: Vec<u64> = if p == 2 {
+                let g = crate::gf2x::least_low_term(n).unwrap();
+                (0..=n).map(|i| if i == n { 1 } else if i < 64 { g >> i & 1 } else { 0 }).collect()
+            } else {
+                odd_modulus(p, n, &mut rng)
+            };
+            let pk = Ctx::packed_field(p, &cs).unwrap();
+            let size = pk.elem_size();
+            // A vector of l random elements, as FLINT holds it.
+            let mut vector = |l: usize| {
+                let mut v = vec![0u8; l * size];
+                for i in 0..l {
+                    let e = Elem::fq_from_coords_u64(&pk, &(0..n).map(|_| rng.next() % p).collect::<Vec<_>>());
+                    unsafe { std::ptr::copy_nonoverlapping(e.as_ptr() as *const u8, v[i * size..].as_mut_ptr(), size) };
+                }
+                v
+            };
+            // Lengths about the cutoff for substitution, 3n for p = 2 and 6
+            // otherwise, and some longer.
+            let c = if p == 2 { 3 * n } else { 6 };
+            for (la, lb) in [(c - 1, c + 4), (c, c), (c + 3, 2 * c), (2 * c, c + 1), (33, 33), (100, 57)] {
+                let (a, b) = (vector(la), vector(lb));
+                for (y, ly) in [(&b, lb), (&a, la)] {
+                    for len in [1, la.min(ly), la + ly - 2, la + ly - 1] {
+                        let (mut r1, mut r2) = (vec![0u8; len * size], vec![0u8; len * size]);
+                        let (ap, yp, l) = (a.as_ptr().cast(), y.as_ptr().cast(), len as sys::slong);
+                        unsafe {
+                            assert_eq!(sys::_gr_poly_mullow(r1.as_mut_ptr().cast(), ap, la as sys::slong, yp, ly as sys::slong, l, pk.ptr()), SUCCESS);
+                            assert_eq!(sys::_gr_poly_mullow_generic(r2.as_mut_ptr().cast(), ap, la as sys::slong, yp, ly as sys::slong, l, pk.ptr()), SUCCESS);
+                        }
+                        assert!(r1 == r2, "GF({p}^{n}), lengths {la} and {ly}, first {len}");
+                    }
+                }
+            }
         }
     }
 
