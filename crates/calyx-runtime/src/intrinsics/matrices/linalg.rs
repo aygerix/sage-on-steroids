@@ -23,11 +23,10 @@ use crate::intrinsics::{boolv, intv, one};
 use crate::interp::{CallArgs, Interp};
 use crate::value::*;
 
-fn gr(e: GrError) -> RuntimeError {
+pub(super) fn gr(e: GrError) -> RuntimeError {
     crate::rings::gr_error(e, "Arithmetic failed")
 }
 
-/// Argument i, a square matrix.
 /// The kinds of rings the linear algebra here knows.
 #[derive(Clone, Copy, PartialEq)]
 enum Kind {
@@ -778,13 +777,16 @@ fn solve_mod(a: &Mat, w: &Mat) -> RResult<Option<Mat>> {
 
 // ----- echelon forms -------------------------------------------------------------------
 
-/// The echelon form of a matrix, as `EchelonForm` gives it, with the
-/// transformation T (T·A = E) if wanted.
 /// The reduced echelon form E of a matrix over a field, Magma's
 /// transformation T with T·A = E, and the pivot columns P. When A has full
 /// row rank T is unique, the inverse of the columns P of A, and FLINT's
-/// elimination gives both; otherwise T follows Magma's own elimination
+/// elimination gives both. Otherwise T follows Magma's own elimination
 /// (`Mat::echelon_transform`), as it does over the floating-point reals.
+/// When the first r = rank rows are independent, that elimination takes
+/// them as the pivot rows, whose part of T is the inverse B of their
+/// columns P; the other rows reduce to zero in the order r + 1, n, n - 1,
+/// ..., r + 2 (counting from 1), and T has them from its last row up, the
+/// row for row o with 1 in place o and -A[o, P]·B in the first r places.
 fn field_echelon(m: &Mat) -> RResult<(Mat, Mat, Vec<usize>)> {
     let n = m.nrows();
     if !m.floating() {
@@ -794,8 +796,17 @@ fn field_echelon(m: &Mat) -> RResult<(Mat, Mat, Vec<usize>)> {
             }
         }
         let (e, pivots) = m.rref().map_err(gr)?;
-        if pivots.len() == n {
-            let t = m.select(&(0..n).collect::<Vec<_>>(), &pivots).inv().map_err(gr)?;
+        let r = pivots.len();
+        if let Ok(b) = m.select(&(0..r).collect::<Vec<_>>(), &pivots).inv() {
+            let rest: Vec<usize> = (r + 1..n).chain((r < n).then_some(r)).collect();
+            let mut t = Mat::zero(m.ctx(), n, n);
+            t.insert(&b, 0, 0);
+            if r < n {
+                t.insert(&m.select(&rest, &pivots).mul(&b).and_then(|l| l.neg()).map_err(gr)?, r, 0);
+                for (k, &o) in rest.iter().enumerate() {
+                    t.set_si(r + k, o, 1).map_err(gr)?;
+                }
+            }
             return Ok((e, t, pivots));
         }
     }
@@ -803,6 +814,8 @@ fn field_echelon(m: &Mat) -> RResult<(Mat, Mat, Vec<usize>)> {
     Ok((ech.e, ech.t, ech.pivots))
 }
 
+/// The echelon form of a matrix, as `EchelonForm` gives it, with the
+/// transformation T (T·A = E) if wanted.
 pub fn echelon(x: &Mtrx, want_t: bool) -> RResult<(Mat, Option<Mat>)> {
     match kind(x) {
         Kind::Field if want_t => {
@@ -875,7 +888,7 @@ fn kernel_basis(x: &Mtrx) -> RResult<Mat> {
 }
 
 /// The kernel of a matrix with m rows, as a subspace of R^m.
-fn kernel_space(it: &mut Interp, x: &Mtrx) -> RResult<Value> {
+pub(super) fn kernel_space(it: &mut Interp, x: &Mtrx) -> RResult<Value> {
     let basis = kernel_basis(x)?;
     let ring = x.ring().clone();
     let full = parent(it, &ring, 1, x.m.nrows(), Shape::Tuples)?;
@@ -1196,19 +1209,21 @@ const KERNEL_ALS: &[&str] = &["Default", "Hermite", "LLL", "Modular"];
 
 /// Magma's errors for a parameter whose value does not have the type of its
 /// default, or for an `Al` that is not one of `als`.
-fn check_params(it: &Interp, a: &CallArgs, params: &[(&str, Value)], als: &[&str]) -> RResult<()> {
-    let error = |msg: String| {
-        let types: Vec<String> = a.args.iter().map(|v| it.type_name_ext(v)).collect();
-        Err(RuntimeError::runtime(format!("{msg}\nArgument types given: {}", types.join(", "))))
-    };
+pub(super) fn check_params(it: &Interp, a: &CallArgs, params: &[(&str, Value)], als: &[&str]) -> RResult<()> {
     for (p, default) in params {
         match a.param(p) {
-            Some(v) if std::mem::discriminant(v) != std::mem::discriminant(default) => return error(format!("Bad type for parameter '{p}'")),
-            Some(Value::Str(s)) if !als.contains(&s.as_str()) => return error(format!("Bad value for parameter '{p}' ({})", s.as_str())),
+            Some(v) if std::mem::discriminant(v) != std::mem::discriminant(default) => return Err(with_types(it, a, &format!("Bad type for parameter '{p}'"))),
+            Some(Value::Str(s)) if !als.contains(&s.as_str()) => return Err(with_types(it, a, &format!("Bad value for parameter '{p}' ({})", s.as_str()))),
             _ => {}
         }
     }
     Ok(())
+}
+
+/// Magma's error `msg` followed by the types of the arguments.
+pub(super) fn with_types(it: &Interp, a: &CallArgs, msg: &str) -> RuntimeError {
+    let types: Vec<String> = a.args.iter().map(|v| it.type_name_ext(v)).collect();
+    RuntimeError::runtime(format!("{msg}\nArgument types given: {}", types.join(", ")))
 }
 
 pub fn register(it: &mut Interp) {

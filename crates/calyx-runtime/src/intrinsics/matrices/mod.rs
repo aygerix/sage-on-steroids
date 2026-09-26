@@ -19,6 +19,7 @@ mod access;
 mod arith;
 mod blocks;
 mod change;
+mod charpoly;
 mod creation;
 mod linalg;
 mod predicates;
@@ -400,6 +401,7 @@ pub fn register(it: &mut Interp) {
     change::register(it);
     arith::register(it);
     linalg::register(it);
+    charpoly::register(it);
     predicates::register(it);
     spaces::register(it);
 }

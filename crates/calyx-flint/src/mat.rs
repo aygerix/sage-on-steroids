@@ -461,11 +461,18 @@ impl Mat {
     /// The inverse of a square matrix; `Domain` if it has none.
     pub fn inv(&self) -> GrResult<Mat> {
         let mut m = Mat::zero(&self.ctx, self.nrows(), self.ncols());
-        if let CtxKind::Nmod(_) = self.ctx.kind() {
-            let ok = unsafe { sys::nmod_mat_inv(&mut m.nmod_view(), &self.nmod_view()) };
-            return if ok != 0 { Ok(m) } else { Err(GrError::Domain) };
+        let ok = match self.ctx.kind() {
+            CtxKind::Nmod(_) => unsafe { sys::nmod_mat_inv(&mut m.nmod_view(), &self.nmod_view()) },
+            // Multimodular, where the generic elimination over Q is slow.
+            CtxKind::Rationals => unsafe { sys::fmpq_mat_inv(&mut m.fmpq_view(), &self.fmpq_view()) },
+            _ => {
+                check(unsafe { sys::gr_mat_inv(&mut m.raw, &self.raw, self.ctx.ptr()) })?;
+                return Ok(m);
+            }
+        };
+        if ok == 0 {
+            return Err(GrError::Domain);
         }
-        check(unsafe { sys::gr_mat_inv(&mut m.raw, &self.raw, self.ctx.ptr()) })?;
         Ok(m)
     }
 
@@ -620,6 +627,59 @@ impl Mat {
         let mut c = Mat::zero(&self.ctx, 1, n + 1);
         check(unsafe { sys::_gr_mat_charpoly(c.ptr_mut(0, 0), &self.raw, self.ctx.ptr()) })?;
         Ok((0..=n).map(|j| c.entry(0, j)).collect())
+    }
+
+    /// The coefficients of the minimal polynomial of a square matrix over
+    /// the integers or a field, the constant term first: FLINT's modular
+    /// algorithms over the integers and the rationals, and otherwise its
+    /// Krylov-space one over a field.
+    pub fn minpoly(&self) -> GrResult<Vec<Elem>> {
+        assert_eq!(self.nrows(), self.ncols(), "minimal polynomial of a matrix that is not square");
+        if self.nrows() == 0 {
+            return Ok(vec![Elem::one(&self.ctx)?]);
+        }
+        let elem = |f: &mut dyn FnMut(*mut c_void)| {
+            let mut e = Elem::new(&self.ctx);
+            f(e.as_mut_ptr());
+            e
+        };
+        unsafe {
+            match self.ctx.kind() {
+                CtxKind::Integers => {
+                    let mut p = sys::fmpz_poly_struct::default();
+                    sys::fmpz_poly_init(&mut p);
+                    sys::fmpz_mat_minpoly(&mut p, &self.fmpz_view());
+                    let cs = (0..p.length as usize).map(|i| elem(&mut |e| sys::fmpz_set(e.cast(), p.coeffs.add(i)))).collect();
+                    sys::fmpz_poly_clear(&mut p);
+                    Ok(cs)
+                }
+                CtxKind::Rationals => {
+                    let mut p = sys::fmpq_poly_struct::default();
+                    sys::fmpq_poly_init(&mut p);
+                    sys::fmpq_mat_minpoly(&mut p, &self.fmpq_view());
+                    let cs = (0..p.length).map(|i| elem(&mut |e| sys::fmpq_poly_get_coeff_fmpq(e.cast(), &p, i))).collect();
+                    sys::fmpq_poly_clear(&mut p);
+                    Ok(cs)
+                }
+                CtxKind::Nmod(_) if self.ctx.is_field() == Truth::True => {
+                    let view = self.nmod_view();
+                    let mut p = sys::nmod_poly_struct::default();
+                    sys::nmod_poly_init(&mut p, view.mod_.n);
+                    sys::nmod_mat_minpoly(&mut p, &view);
+                    let cs = (0..p.length as usize).map(|i| Elem::from_word(&self.ctx, *p.coeffs.add(i))).collect();
+                    sys::nmod_poly_clear(&mut p);
+                    Ok(cs)
+                }
+                _ => {
+                    let mut p = sys::gr_poly_struct::default();
+                    sys::gr_poly_init(&mut p, self.ctx.ptr());
+                    let st = sys::gr_mat_minpoly_field(&mut p, &self.raw, self.ctx.ptr());
+                    let cs = (0..p.length).map(|i| elem(&mut |e| assert_eq!(sys::gr_poly_get_coeff_scalar(e, &p, i, self.ctx.ptr()), 0))).collect();
+                    sys::gr_poly_clear(&mut p, self.ctx.ptr());
+                    check(st).map(|_| cs)
+                }
+            }
+        }
     }
 
     /// A basis of the left kernel {v : v·A = 0} of a matrix over a field,
