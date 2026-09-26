@@ -49,6 +49,7 @@ impl Interp {
             Value::Nfd(e) => Value::Struct(e.parent.clone()),
             Value::Drch(e) => Value::Struct(e.group.clone()),
             Value::Mat(m) => Value::Struct(m.parent.clone()),
+            Value::Sparse(m) => Value::Struct(m.parent.clone()),
             Value::Obj(o) => {
                 let sym = Sym::new("Parent");
                 if self.select_signature(sym, std::slice::from_ref(v), &[false], false).is_some_and(|s| !s.generic) {
@@ -207,6 +208,7 @@ impl Interp {
                 StructKind::Nearfield(_) => self.coerce_into_nearfield(st, x, false),
                 StructKind::DrchGroup(_) => crate::intrinsics::residue::dirichlet::coerce(self, st, x),
                 StructKind::Matrices(_) => crate::intrinsics::matrices::coerce(self, st, x),
+                StructKind::SparseMatrices(_) => crate::intrinsics::sparse::coerce(self, st, x),
                 StructKind::IntIdeal(n) => match x {
                     Value::Int(_) | Value::Rat(_) => {
                         let v = match self.try_coerce(&Value::integers(), x)? {
@@ -1003,6 +1005,7 @@ impl Interp {
                 // Magma shows the ring of vectors and square matrices, not of the others.
                 StructKind::Matrices(m) if m.shape == crate::intrinsics::matrices::Shape::Space => TypeVal::Cat(m.elt_type()),
                 StructKind::Matrices(m) => TypeVal::Ext(m.elt_type(), Rc::from(vec![TypeArg::Type(TypeVal::Cat(m.ring.type_id()))])),
+                StructKind::SparseMatrices(_) => TypeVal::Cat(t::MTRX_SPRS),
             },
             Value::Seq(s) => match s.universe.clone() {
                 Some(u) => self.element_type_of(&u),
@@ -1054,8 +1057,10 @@ impl Interp {
             },
             // Matrices show their coefficient ring.
             Value::Mat(m) => TypeVal::Ext(v.type_id(), Rc::from(vec![TypeArg::Type(TypeVal::Cat(m.ring().type_id()))])),
+            Value::Sparse(m) => TypeVal::Ext(v.type_id(), Rc::from(vec![TypeArg::Type(TypeVal::Cat(m.ring().type_id()))])),
             Value::Struct(s) => match &s.kind {
                 StructKind::Matrices(m) => TypeVal::Ext(v.type_id(), Rc::from(vec![TypeArg::Type(TypeVal::Cat(m.ring.type_id()))])),
+                StructKind::SparseMatrices(m) => TypeVal::Ext(v.type_id(), Rc::from(vec![TypeArg::Type(TypeVal::Cat(m.ring.type_id()))])),
                 StructKind::PowerSeq(u) => tmp(u, t::POW_SEQ_ENUM),
                 StructKind::PowerSet(u) => tmp(u, t::POW_SET_ENUM),
                 StructKind::Ring(r) if matches!(r.kind, crate::rings::RingKind::UPoly { .. } | crate::rings::RingKind::UPolyRes { .. }) => TypeVal::Ext(v.type_id(), Rc::from(vec![TypeArg::Type(TypeVal::Cat(r.base().unwrap().type_id()))])),
@@ -1124,6 +1129,7 @@ impl Interp {
                 // Magma shows the ring of vectors and square matrices, not of the others.
                 StructKind::Matrices(m) if m.shape == crate::intrinsics::matrices::Shape::Space => TypeVal::Cat(m.elt_type()),
                 StructKind::Matrices(m) => TypeVal::Ext(m.elt_type(), Rc::from(vec![TypeArg::Type(TypeVal::Cat(m.ring.type_id()))])),
+                StructKind::SparseMatrices(_) => TypeVal::Cat(t::MTRX_SPRS),
             },
             Value::Seq(s) => s.universe.as_ref().map(|u| self.static_element_type(u)).unwrap_or(TypeVal::Cat(t::ANY)),
             Value::Set(s) => s.universe.as_ref().map(|u| self.static_element_type(u)).unwrap_or(TypeVal::Cat(t::ANY)),

@@ -64,6 +64,7 @@ pub fn value_kind(v: &Value) -> &'static str {
         Value::Nfd(_) => "NfdElt",
         Value::Drch(_) => "GrpDrchElt",
         Value::Mat(_) => "Mtrx",
+        Value::Sparse(_) => "MtrxSprs",
         Value::Infinity(_) => "Infty",
     }
 }
