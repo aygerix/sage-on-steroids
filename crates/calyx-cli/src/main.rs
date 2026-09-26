@@ -15,6 +15,11 @@ use rustyline::{ColorMode, CompletionType, Editor, EventHandler, KeyCode, KeyEve
 
 use editor::{CLOSER_KEYS, CalyxHelper, DedentHandler, EnterHandler, Rewrite};
 
+// Scripts allocate many small values, which mimalloc serves faster than
+// the system allocators.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 struct Options {
@@ -87,6 +92,15 @@ fn parse_args() -> Result<Options, String> {
 }
 
 fn main() {
+    // FLINT and GMP still allocate with malloc. glibc raises its mmap
+    // threshold when large blocks are freed, but Rust's no longer reach it,
+    // so fix the threshold at its maximum: otherwise every large FLINT
+    // matrix is a fresh mapping, faulted in page by page.
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    unsafe {
+        libc::mallopt(libc::M_MMAP_THRESHOLD, 32 << 20);
+        libc::mallopt(libc::M_TRIM_THRESHOLD, 64 << 20);
+    }
     let opts = match parse_args() {
         Ok(o) => o,
         Err(e) => {
