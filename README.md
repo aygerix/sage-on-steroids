@@ -87,6 +87,22 @@ recalled from history as one entry. Errors and help are shown in colour.
 Values are always printed exactly as Magma prints them, and colour is only
 used on a terminal: pass `--no-color` or set `NO_COLOR` to turn it off.
 
+The environment settings use calyx-specific names so installing both systems
+does not make either one read the other's startup files or search paths:
+
+| calyx variable | Corresponding Magma variable | Purpose |
+| --- | --- | --- |
+| `CALYX_STARTUP_FILE` | `MAGMA_STARTUP_FILE` | Default startup file |
+| `CALYX_PATH` | `MAGMA_PATH` | Colon-separated file search path |
+| `CALYX_LIBRARY_ROOT` | `MAGMA_LIBRARY_ROOT` | Root containing library directories |
+| `CALYX_LIBRARIES` | `MAGMA_LIBRARIES` | Colon-separated directories below the library root |
+| `CALYX_SYSTEM_SPEC` | `MAGMA_SYSTEM_SPEC` | System package specification file |
+| `CALYX_USER_SPEC` | `MAGMA_USER_SPEC` | User package specification file |
+| `CALYX_TEMP_DIR` | `MAGMA_TEMP_DIR` | Temporary-file directory |
+
+`CALYX_MEMORY_LIMIT` and `CALYX_HELP_DIR` are not implemented. calyx never
+reads the corresponding `MAGMA_*` variables.
+
 ## Layout
 
 | Crate | Purpose |
