@@ -55,9 +55,8 @@ jobs:
           echo "PKG_CONFIG_PATH=$HOME/flint/lib/pkgconfig" >> "$GITHUB_ENV"
           echo "LD_LIBRARY_PATH=$HOME/flint/lib" >> "$GITHUB_ENV"
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -101,7 +100,8 @@ jobs:
           echo "PKG_CONFIG_PATH=$HOME/flint/lib/pkgconfig" >> "$GITHUB_ENV"
           echo "DYLD_LIBRARY_PATH=$HOME/flint/lib" >> "$GITHUB_ENV"
 
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -141,7 +141,8 @@ jobs:
           echo "PKG_CONFIG_PATH=$HOME/flint/lib/pkgconfig" >> "$GITHUB_ENV"
           echo "LD_LIBRARY_PATH=$HOME/flint/lib" >> "$GITHUB_ENV"
 
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
 
       - uses: Swatinem/rust-cache@v2
         with:
