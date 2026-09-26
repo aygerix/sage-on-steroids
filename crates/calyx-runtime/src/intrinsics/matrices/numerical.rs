@@ -449,7 +449,7 @@ fn numerical_inverse(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
     if x.m.nrows() == 0 { return Err(RuntimeError::runtime("Argument 1 has degree zero")); }
     let (w, bits, _) = work(&x)?;
     let z = svd(&w)?;
-    if numerical_rank_of(a, bits + GUARD_BITS, &z.sigma)? != w.nrows() {
+    if numerical_rank_of(a, bits, &z.sigma)? != w.nrows() {
         return Err(RuntimeError::runtime("Matrix is numerically singular"));
     }
     let p = pseudoinverse_of(&z, w.nrows())?;
@@ -460,7 +460,7 @@ fn numerical_rank(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
     let x = mat_arg(a, 0)?.clone();
     let (w, bits, _) = work(&x)?;
     let z = svd(&w)?;
-    intv(Integer::from_u64(numerical_rank_of(a, bits + GUARD_BITS, &z.sigma)? as u64))
+    intv(Integer::from_u64(numerical_rank_of(a, bits, &z.sigma)? as u64))
 }
 
 fn kernel_of(z: &Svd, rank: usize) -> Mat {
@@ -475,7 +475,7 @@ fn numerical_kernel(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
     let x = mat_arg(a, 0)?.clone();
     let (w, bits, _) = work(&x)?;
     let z = svd(&w)?;
-    let rank = numerical_rank_of(a, bits + GUARD_BITS, &z.sigma)?;
+    let rank = numerical_rank_of(a, bits, &z.sigma)?;
     one(mat_value(it, x.ring(), round(&kernel_of(&z, rank), x.m.ctx())?)?)
 }
 
@@ -483,7 +483,7 @@ fn numerical_image(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
     let x = mat_arg(a, 0)?.clone();
     let (w, bits, _) = work(&x)?;
     let z = svd(&w)?;
-    let rank = numerical_rank_of(a, bits + GUARD_BITS, &z.sigma)?;
+    let rank = numerical_rank_of(a, bits, &z.sigma)?;
     one(mat_value(it, x.ring(), round(&image_of(&z, rank), x.m.ctx())?)?)
 }
 
@@ -500,7 +500,7 @@ fn numerical_pseudoinverse(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
     let x = mat_arg(a, 0)?.clone();
     let (w, bits, _) = work(&x)?;
     let z = svd(&w)?;
-    let rank = numerical_rank_of(a, bits + GUARD_BITS, &z.sigma)?;
+    let rank = numerical_rank_of(a, bits, &z.sigma)?;
     one(mat_value(it, x.ring(), round(&pseudoinverse_of(&z, rank)?, x.m.ctx())?)?)
 }
 
@@ -514,11 +514,11 @@ fn solve_numerically(_it: &mut Interp, a: &mut CallArgs) -> RResult<(Rc<Mtrx>, R
     let (w, bits, _) = work(&x)?;
     let yw = y.m.change_ring(w.ctx()).map_err(gr)?;
     let z = svd(&w)?;
-    let rank = numerical_rank_of(a, bits + GUARD_BITS, &z.sigma)?;
+    let rank = numerical_rank_of(a, bits, &z.sigma)?;
     let p = pseudoinverse_of(&z, rank)?;
     let v = yw.mul(&p).map_err(gr)?;
     let residual = v.mul(&w).map_err(gr)?.sub(&yw).map_err(gr)?;
-    let e = epsilon(a, bits + GUARD_BITS, &z.sigma)?;
+    let e = epsilon(a, bits, &z.sigma)?;
     let consistent = (0..residual.nrows()).all(|i| (0..residual.ncols()).all(|j| abs_real(&residual.entry(i, j)).cmp_magma(&e) != Ordering::Greater));
     Ok((x, y, v, kernel_of(&z, rank), consistent))
 }
