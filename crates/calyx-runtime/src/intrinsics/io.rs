@@ -3,6 +3,9 @@
 use std::io::{Read as _, Write};
 use std::rc::Rc;
 
+use calyx_flint::{Integer, Real, Rational};
+use calyx_syntax::ast::AggKind;
+
 use super::{boolv, none, one};
 use crate::error::{RResult, RuntimeError};
 use crate::interp::{CallArgs, Interp};
@@ -11,6 +14,12 @@ use crate::value::*;
 
 /// The string returned by `Gets` and friends at end of file.
 pub const EOF_MARKER: &str = "\u{0}EOF";
+
+const OBJECT_MAGIC: &[u8; 8] = b"CALYXOBJ";
+const OBJECT_VERSION: u16 = 1;
+const OBJECT_HEADER: usize = 18;
+const MAX_OBJECT_SIZE: usize = 256 * 1024 * 1024;
+const MAX_OBJECT_DEPTH: usize = 128;
 
 impl Interp {
     /// Append text to a file named by a string, or write to an open file.
@@ -328,6 +337,424 @@ fn write_bytes_check(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
     boolv(write_bytes(it, a).is_ok())
 }
 
+fn object_error(s: impl Into<String>) -> RuntimeError {
+    RuntimeError::runtime(format!("Invalid calyx object: {}", s.into()))
+}
+
+fn object_precision(bits: u64) -> RResult<u64> {
+    if bits >= 2 && bits < 1 << 40 && calyx_flint::digits_for_bits(bits) < 1 << 38 {
+        Ok(bits)
+    } else {
+        Err(object_error("precision is out of range"))
+    }
+}
+
+fn put_u64(out: &mut Vec<u8>, n: u64) {
+    out.extend_from_slice(&n.to_le_bytes());
+}
+
+fn put_blob(out: &mut Vec<u8>, data: &[u8]) {
+    put_u64(out, data.len() as u64);
+    out.extend_from_slice(data);
+}
+
+fn put_integer(out: &mut Vec<u8>, n: &Integer) {
+    put_blob(out, n.to_string().as_bytes());
+}
+
+fn encode_real(out: &mut Vec<u8>, x: &Real) -> RResult<()> {
+    if !x.is_finite() {
+        return Err(RuntimeError::runtime("Non-finite real numbers cannot be written as calyx objects"));
+    }
+    put_u64(out, x.prec());
+    let (m, e) = x.mantissa_exponent();
+    put_integer(out, &m);
+    out.extend_from_slice(&e.to_le_bytes());
+    out.push((x.is_zero() && x.is_sign_negative()) as u8);
+    Ok(())
+}
+
+fn encode_universe(it: &Interp, out: &mut Vec<u8>, universe: &Option<Value>) -> RResult<()> {
+    match universe {
+        Some(v) => {
+            out.push(1);
+            encode_value(it, out, v)
+        }
+        None => {
+            out.push(0);
+            Ok(())
+        }
+    }
+}
+
+fn encode_values<'a>(it: &Interp, out: &mut Vec<u8>, values: impl ExactSizeIterator<Item = &'a Value>) -> RResult<()> {
+    put_u64(out, values.len() as u64);
+    for v in values {
+        encode_value(it, out, v)?;
+    }
+    Ok(())
+}
+
+fn encode_value(it: &Interp, out: &mut Vec<u8>, v: &Value) -> RResult<()> {
+    match v {
+        Value::Undef => out.push(0),
+        Value::Bool(false) => out.push(1),
+        Value::Bool(true) => out.push(2),
+        Value::Int(n) => {
+            out.push(3);
+            put_integer(out, n);
+        }
+        Value::Rat(q) => {
+            out.push(4);
+            put_integer(out, &q.numerator());
+            put_integer(out, &q.denominator());
+        }
+        Value::Real(x) => {
+            out.push(5);
+            encode_real(out, &x.x)?;
+        }
+        Value::Complex(x) => {
+            out.push(6);
+            encode_real(out, &x.re)?;
+            encode_real(out, &x.im)?;
+        }
+        Value::Str(s) => {
+            out.push(7);
+            put_blob(out, s.as_bytes());
+        }
+        Value::BStr(s) => {
+            out.push(8);
+            put_blob(out, s);
+        }
+        Value::Seq(s) => {
+            out.push(9);
+            encode_universe(it, out, &s.universe)?;
+            encode_values(it, out, s.elems.iter())?;
+        }
+        Value::Tuple(s) => {
+            out.push(10);
+            encode_values(it, out, s.elems.iter())?;
+        }
+        Value::List(s) => {
+            out.push(11);
+            encode_values(it, out, s.iter())?;
+        }
+        Value::Set(s) => {
+            out.push(12);
+            encode_universe(it, out, &s.universe)?;
+            let values: Vec<Value> = s.iter().collect();
+            encode_values(it, out, values.iter())?;
+        }
+        Value::ISet(s) => {
+            out.push(13);
+            encode_universe(it, out, &s.universe)?;
+            encode_values(it, out, s.elems.iter())?;
+        }
+        Value::MSet(s) => {
+            out.push(14);
+            encode_universe(it, out, &s.universe)?;
+            put_u64(out, s.elems.len() as u64);
+            for (v, n) in &s.elems {
+                encode_value(it, out, v)?;
+                put_u64(out, *n);
+            }
+        }
+        Value::Infinity(sign) => {
+            out.push(15);
+            out.push(*sign as u8);
+        }
+        Value::Struct(s) => match &s.kind {
+            StructKind::Integers => out.push(16),
+            StructKind::Rationals => out.push(17),
+            StructKind::Reals(bits) => {
+                out.push(18);
+                put_u64(out, *bits);
+            }
+            StructKind::Booleans => out.push(19),
+            StructKind::Strings => out.push(20),
+            StructKind::Ring(r) => match &r.kind {
+                crate::rings::RingKind::Complex(bits) => {
+                    out.push(21);
+                    put_u64(out, *bits);
+                }
+                _ => return Err(RuntimeError::runtime("This parent cannot be written as a calyx object")),
+            },
+            _ => return Err(RuntimeError::runtime("This parent cannot be written as a calyx object")),
+        },
+        Value::Mat(m) => {
+            out.push(22);
+            encode_value(it, out, m.ring())?;
+            out.push(match m.info().shape {
+                crate::intrinsics::matrices::Shape::Algebra => 0,
+                crate::intrinsics::matrices::Shape::Space => 1,
+                crate::intrinsics::matrices::Shape::Tuples => 2,
+            });
+            put_u64(out, m.m.nrows() as u64);
+            put_u64(out, m.m.ncols() as u64);
+            for i in 0..m.m.nrows() {
+                for j in 0..m.m.ncols() {
+                    encode_value(it, out, &crate::intrinsics::matrices::entry_value(it, m, i, j))?;
+                }
+            }
+        }
+        _ => return Err(RuntimeError::runtime("This value cannot be written as a calyx object")),
+    }
+    Ok(())
+}
+
+struct ObjectReader<'a> {
+    data: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> ObjectReader<'a> {
+    fn take(&mut self, n: usize) -> RResult<&'a [u8]> {
+        let end = self.pos.checked_add(n).filter(|end| *end <= self.data.len()).ok_or_else(|| object_error("truncated data"))?;
+        let result = &self.data[self.pos..end];
+        self.pos = end;
+        Ok(result)
+    }
+
+    fn byte(&mut self) -> RResult<u8> {
+        Ok(self.take(1)?[0])
+    }
+
+    fn u64(&mut self) -> RResult<u64> {
+        Ok(u64::from_le_bytes(self.take(8)?.try_into().unwrap()))
+    }
+
+    fn usize(&mut self) -> RResult<usize> {
+        usize::try_from(self.u64()?).map_err(|_| object_error("length is too large"))
+    }
+
+    fn blob(&mut self) -> RResult<&'a [u8]> {
+        let n = self.usize()?;
+        self.take(n)
+    }
+
+    fn integer(&mut self) -> RResult<Integer> {
+        let text = std::str::from_utf8(self.blob()?).map_err(|_| object_error("integer is not UTF-8"))?;
+        Integer::parse(text).ok_or_else(|| object_error("bad integer"))
+    }
+
+    fn real(&mut self) -> RResult<Real> {
+        let bits = object_precision(self.u64()?)?;
+        let m = self.integer()?;
+        let e = i64::from_le_bytes(self.take(8)?.try_into().unwrap());
+        let negative_zero = self.byte()? != 0;
+        if bits < 2 {
+            return Err(object_error("bad real precision"));
+        }
+        Ok(if m.is_zero() && negative_zero { Real::signed_zero(bits, true) } else { Real::from_integer_2exp(&m, e, bits) })
+    }
+
+    fn universe(&mut self, it: &mut Interp, depth: usize) -> RResult<Option<Value>> {
+        match self.byte()? {
+            0 => Ok(None),
+            1 => Ok(Some(self.value_at(it, depth + 1)?)),
+            _ => Err(object_error("bad optional universe")),
+        }
+    }
+
+    fn values(&mut self, it: &mut Interp, depth: usize) -> RResult<Vec<Value>> {
+        let n = self.usize()?;
+        if n > self.data.len() - self.pos {
+            return Err(object_error("aggregate length exceeds the remaining payload"));
+        }
+        let mut values = Vec::with_capacity(n.min(1024));
+        for _ in 0..n {
+            values.push(self.value_at(it, depth + 1)?);
+        }
+        Ok(values)
+    }
+
+    fn value(&mut self, it: &mut Interp) -> RResult<Value> {
+        self.value_at(it, 0)
+    }
+
+    fn value_at(&mut self, it: &mut Interp, depth: usize) -> RResult<Value> {
+        if depth > MAX_OBJECT_DEPTH {
+            return Err(object_error("nesting is too deep"));
+        }
+        Ok(match self.byte()? {
+            0 => Value::Undef,
+            1 => Value::Bool(false),
+            2 => Value::Bool(true),
+            3 => Value::Int(self.integer()?),
+            4 => {
+                let n = self.integer()?;
+                let d = self.integer()?;
+                Value::rat(Rational::new(&n, &d).ok_or_else(|| object_error("zero rational denominator"))?)
+            }
+            5 => Value::real(self.real()?),
+            6 => Value::complex(self.real()?, self.real()?),
+            7 => Value::string(String::from_utf8(self.blob()?.to_vec()).map_err(|_| object_error("string is not UTF-8"))?),
+            8 => Value::bytes(self.blob()?.to_vec()),
+            9 => {
+                let universe = self.universe(it, depth)?;
+                let values = self.values(it, depth)?;
+                it.build_aggregate(AggKind::Seq, universe, values, false)?
+            }
+            10 => Value::tuple(self.values(it, depth)?),
+            11 => Value::list(self.values(it, depth)?),
+            12 => {
+                let universe = self.universe(it, depth)?;
+                let values = self.values(it, depth)?;
+                it.build_aggregate(AggKind::Set, universe, values, false)?
+            }
+            13 => {
+                let universe = self.universe(it, depth)?;
+                let values = self.values(it, depth)?;
+                it.build_aggregate(AggKind::ISet, universe, values, false)?
+            }
+            14 => {
+                let universe = self.universe(it, depth)?;
+                let n = self.usize()?;
+                if n > (self.data.len() - self.pos) / 9 {
+                    return Err(object_error("multiset length exceeds the remaining payload"));
+                }
+                let mut values = Vec::with_capacity(n.min(1024));
+                let mut mults = Vec::with_capacity(n.min(1024));
+                for _ in 0..n {
+                    values.push(self.value_at(it, depth + 1)?);
+                    mults.push(self.u64()?);
+                }
+                it.build_multiset(universe, values, mults)?
+            }
+            15 => match self.byte()? {
+                0 => Value::Infinity(false),
+                1 => Value::Infinity(true),
+                _ => return Err(object_error("bad infinity sign")),
+            },
+            16 => Value::integers(),
+            17 => Value::rationals(),
+            18 => Value::reals(object_precision(self.u64()?)?),
+            19 => Value::booleans(),
+            20 => Value::strings(),
+            21 => it.complex_field(object_precision(self.u64()?)?),
+            22 => {
+                let ring = self.value_at(it, depth + 1)?;
+                let shape = match self.byte()? {
+                    0 => crate::intrinsics::matrices::Shape::Algebra,
+                    1 => crate::intrinsics::matrices::Shape::Space,
+                    2 => crate::intrinsics::matrices::Shape::Tuples,
+                    _ => return Err(object_error("bad matrix shape")),
+                };
+                let nrows = self.usize()?;
+                let ncols = self.usize()?;
+                if shape == crate::intrinsics::matrices::Shape::Tuples && nrows != 1 {
+                    return Err(object_error("bad vector dimensions"));
+                }
+                if shape == crate::intrinsics::matrices::Shape::Algebra && nrows != ncols {
+                    return Err(object_error("matrix algebra element is not square"));
+                }
+                let entries = nrows.checked_mul(ncols).ok_or_else(|| object_error("matrix dimensions are too large"))?;
+                if entries > self.data.len() - self.pos {
+                    return Err(object_error("matrix dimensions exceed the remaining payload"));
+                }
+                let ctx = crate::intrinsics::matrices::entry_ctx(it, &ring)?;
+                let mut mat = calyx_flint::mat::Mat::zero(&ctx, nrows, ncols);
+                for i in 0..nrows {
+                    for j in 0..ncols {
+                        let entry = self.value_at(it, depth + 1)?;
+                        if !crate::intrinsics::matrices::set_entry(it, &ring, &mut mat, i, j, &entry)? {
+                            return Err(object_error("matrix entry does not belong to its coefficient ring"));
+                        }
+                    }
+                }
+                let parent = crate::intrinsics::matrices::parent(it, &ring, nrows, ncols, shape)?;
+                Value::Mat(Rc::new(crate::intrinsics::matrices::Mtrx { parent, m: mat }))
+            }
+            _ => return Err(object_error("unknown value tag")),
+        })
+    }
+}
+
+fn encode_object(it: &Interp, value: &Value) -> RResult<Vec<u8>> {
+    let mut payload = Vec::new();
+    encode_value(it, &mut payload, value)?;
+    if payload.len() > MAX_OBJECT_SIZE {
+        return Err(RuntimeError::runtime("Calyx object is too large"));
+    }
+    let mut data = Vec::with_capacity(OBJECT_HEADER + payload.len());
+    data.extend_from_slice(OBJECT_MAGIC);
+    data.extend_from_slice(&OBJECT_VERSION.to_le_bytes());
+    put_u64(&mut data, payload.len() as u64);
+    data.extend_from_slice(&payload);
+    Ok(data)
+}
+
+fn object_frame_len(data: &[u8]) -> RResult<Option<usize>> {
+    if data.len() < OBJECT_HEADER {
+        return Ok(None);
+    }
+    if &data[..8] != OBJECT_MAGIC {
+        return Err(object_error("bad format marker"));
+    }
+    let version = u16::from_le_bytes(data[8..10].try_into().unwrap());
+    if version != OBJECT_VERSION {
+        return Err(object_error(format!("unsupported version {version}")));
+    }
+    let payload = usize::try_from(u64::from_le_bytes(data[10..18].try_into().unwrap())).map_err(|_| object_error("length is too large"))?;
+    if payload > MAX_OBJECT_SIZE {
+        return Err(object_error("length is too large"));
+    }
+    Ok(Some(OBJECT_HEADER + payload))
+}
+
+fn decode_object(it: &mut Interp, data: &[u8]) -> RResult<Value> {
+    let Some(n) = object_frame_len(data)? else { return Err(object_error("truncated header")) };
+    if data.len() != n {
+        return Err(object_error(if data.len() < n { "truncated payload" } else { "trailing data" }));
+    }
+    let mut reader = ObjectReader { data: &data[OBJECT_HEADER..], pos: 0 };
+    let value = reader.value(it)?;
+    if reader.pos != reader.data.len() {
+        return Err(object_error("trailing payload data"));
+    }
+    Ok(value)
+}
+
+fn read_object_data(io: &Rc<IoObj>) -> RResult<Vec<u8>> {
+    if let Some(data) = take_async_result(io, AsyncReadKind::Object)? {
+        return Ok(data);
+    }
+    let header = read_raw(io, Some(OBJECT_HEADER), true)?;
+    if header.len() != OBJECT_HEADER {
+        return Err(object_error("input ended before the header was complete"));
+    }
+    let n = object_frame_len(&header)?.unwrap();
+    let mut data = header;
+    let payload = read_raw(io, Some(n - OBJECT_HEADER), true)?;
+    if payload.len() != n - OBJECT_HEADER {
+        return Err(object_error("input ended before the payload was complete"));
+    }
+    data.extend_from_slice(&payload);
+    Ok(data)
+}
+
+fn read_object(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let io = io_arg(a, 0);
+    one(decode_object(it, &read_object_data(&io)?)?)
+}
+
+fn read_object_check(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    match read_object(it, a) {
+        Ok(mut values) => Ok(vals![Value::Bool(true), values.pop().unwrap_or(Value::Undef)]),
+        Err(_) => Ok(vals![Value::Bool(false), Value::Undef]),
+    }
+}
+
+fn write_object(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let io = io_arg(a, 0);
+    write_raw(&io, &encode_object(it, &a.args[1])?)?;
+    none()
+}
+
+fn write_object_check(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    boolv(write_object(it, a).is_ok())
+}
+
 fn gets(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
     let io = io_arg(a, 0);
     let mut line = Vec::new();
@@ -613,6 +1040,16 @@ fn queue_async_write(io: &Rc<IoObj>, data: Vec<u8>) -> RResult<()> {
     Ok(())
 }
 
+fn async_read_need(request: &PendingRead) -> RResult<Option<usize>> {
+    if request.kind == AsyncReadKind::Object {
+        return Ok(Some(match object_frame_len(&request.data)? {
+            Some(n) => n.saturating_sub(request.data.len()),
+            None => OBJECT_HEADER - request.data.len(),
+        }));
+    }
+    Ok(request.count.map(|n| n.saturating_sub(request.data.len())))
+}
+
 fn advance_async(io: &Rc<IoObj>) -> RResult<()> {
     let writes: Vec<Vec<u8>> = io.async_io.borrow_mut().writes.drain(..).collect();
     for data in writes {
@@ -630,7 +1067,7 @@ fn advance_async(io: &Rc<IoObj>) -> RResult<()> {
     match &mut *io.state.borrow_mut() {
         IoState::Socket { stream, eof: stream_eof } => {
             stream.set_nonblocking(true).map_err(|e| RuntimeError::runtime(e.to_string()))?;
-            let need = request.count.map(|n| n.saturating_sub(request.data.len())).unwrap_or(8192).max(1);
+            let need = async_read_need(request)?.unwrap_or(8192).max(1);
             let mut buf = vec![0u8; need.min(8192)];
             loop {
                 match stream.read(&mut buf) {
@@ -641,9 +1078,11 @@ fn advance_async(io: &Rc<IoObj>) -> RResult<()> {
                     }
                     Ok(n) => {
                         request.data.extend_from_slice(&buf[..n]);
-                        if !request.exact || request.count.is_some_and(|m| request.data.len() >= m) {
+                        let need = async_read_need(request)?;
+                        if !request.exact || need == Some(0) {
                             break;
                         }
+                        buf.resize(need.unwrap_or(8192).max(1).min(8192), 0);
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
                     Err(e) => {
@@ -655,15 +1094,21 @@ fn advance_async(io: &Rc<IoObj>) -> RResult<()> {
             stream.set_nonblocking(false).map_err(|e| RuntimeError::runtime(e.to_string()))?;
         }
         IoState::Reader { data, pos } => {
-            let end = request.count.map_or(data.len(), |n| pos.saturating_add(n).min(data.len()));
-            request.data.extend_from_slice(&data[*pos..end]);
-            *pos = end;
-            eof = true;
+            loop {
+                let need = async_read_need(request)?;
+                let end = need.map_or(data.len(), |n| pos.saturating_add(n).min(data.len()));
+                request.data.extend_from_slice(&data[*pos..end]);
+                *pos = end;
+                if request.kind != AsyncReadKind::Object || need == Some(0) || *pos >= data.len() {
+                    break;
+                }
+            }
+            eof = *pos >= data.len();
         }
         IoState::ServerSocket { .. } => return Err(RuntimeError::runtime("Cannot queue a data read on a server socket")),
         _ => return Err(RuntimeError::runtime("Channel is not open for asynchronous reading")),
     }
-    let complete = eof || (!request.exact && !request.data.is_empty()) || request.count.is_some_and(|n| request.data.len() >= n);
+    let complete = eof || (!request.exact && !request.data.is_empty()) || async_read_need(request)? == Some(0);
     if complete {
         let request = async_io.read.take().unwrap();
         async_io.ready = Some(AsyncResult { kind: request.kind, data: request.data });
@@ -694,6 +1139,18 @@ fn async_write(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
 fn async_write_bytes(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
     let io = io_arg(a, 0);
     queue_async_write(&io, bytes_from_seq(a, 1)?)?;
+    none()
+}
+
+fn async_read_object(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let io = io_arg(a, 0);
+    queue_async_read(&io, AsyncReadKind::Object, None, true)?;
+    none()
+}
+
+fn async_write_object(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let io = io_arg(a, 0);
+    queue_async_write(&io, encode_object(it, &a.args[1])?)?;
     none()
 }
 
@@ -947,6 +1404,10 @@ pub fn register(it: &mut Interp) {
     it.def("WriteCheck", "I::IO, s::MonStgElt -> BoolElt", "Whether s was written to I.", write_check);
     it.def("WriteBytes", "I::IO, S::SeqEnum", "Write the bytes in S to I.", write_bytes);
     it.def("WriteBytesCheck", "I::IO, S::SeqEnum -> BoolElt", "Whether the bytes in S were written to I.", write_bytes_check);
+    it.def("ReadObject", "I::IO -> .", "Read one value in the versioned calyx object format from I.", read_object);
+    it.def("ReadObjectCheck", "I::IO -> BoolElt, .", "Whether a calyx object was read and its value.", read_object_check);
+    it.def("WriteObject", "I::IO, x::.", "Write x in the versioned calyx object format to I.", write_object);
+    it.def("WriteObjectCheck", "I::IO, x::. -> BoolElt", "Whether x was written as a calyx object.", write_object_check);
     it.def("Flush", "I::IO", "Flush buffered output of I.", flush);
     it.def("Flush", "", "Flush standard output.", flush);
     it.def("Tell", "I::IO -> RngIntElt", "The current position in I.", tell);
@@ -971,6 +1432,8 @@ pub fn register(it: &mut Interp) {
     it.def_params("AsyncReadBytes", "I::IO", &max, "Queue a byte-sequence read from I.", async_read_bytes);
     it.def("AsyncReadBytes", "I::IO, n::RngIntElt", "Queue an n-byte sequence read from I.", async_read_bytes);
     it.def("AsyncWriteBytes", "I::IO, S::SeqEnum", "Queue a byte-sequence write to I.", async_write_bytes);
+    it.def("AsyncReadObject", "I::IO", "Queue a calyx object read from I.", async_read_object);
+    it.def("AsyncWriteObject", "I::IO, x::.", "Queue a calyx object write to I.", async_write_object);
     it.def("System", "C::MonStgElt -> RngIntElt", "Run the shell command C and return its status.", system);
     it.def("Pipe", "C::MonStgElt, S::MonStgElt -> MonStgElt", "Run the shell command C with input S and return its output.", pipe);
     it.def("GetEnv", "S::MonStgElt -> MonStgElt", "The value of the environment variable S.", get_env);
