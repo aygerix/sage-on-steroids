@@ -15,8 +15,11 @@ fn determinant(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
     if x.nrows != x.ncols {
         return Err(RuntimeError::runtime("Argument 1 is not square"));
     }
+    // The reduction leaves out the zero rows and columns of what remains, so the determinant is
+    // zero unless the remainder is all of the unpivoted part.
+    let n = x.nrows;
     if let Some(r) = super::structured::integer_reduce(&x) {
-        let mut d = if r.remainder.nrows() != r.remainder.ncols() {
+        let mut d = if r.remainder.nrows() != n - r.pivots || r.remainder.ncols() != n - r.pivots {
             calyx_flint::Integer::zero()
         } else {
             let tail = r.remainder.det().map_err(|e| crate::rings::gr_error(e, "Arithmetic failed"))?.to_integer().map_err(|e| crate::rings::gr_error(e, "Arithmetic failed"))?;
@@ -26,7 +29,7 @@ fn determinant(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
         return one(Value::Int(d));
     }
     if let Some(r) = super::structured::word_reduce(&x) {
-        let d = if r.remainder.nrows() != r.remainder.ncols() {
+        let d = if r.remainder.nrows() != n - r.pivots || r.remainder.ncols() != n - r.pivots {
             Elem::zero(&x.info().ctx)
         } else {
             let tail = r.remainder.det().map_err(|e| crate::rings::gr_error(e, "Arithmetic failed"))?;
