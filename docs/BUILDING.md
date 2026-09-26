@@ -1,8 +1,9 @@
 # Building from source
 
-calyx needs Rust 1.85 or newer, a C toolchain, `make`, `pkg-config`, GMP,
-MPFR and FLINT 3.6. Linux builds also use OpenBLAS. Apple silicon builds use
-the Accelerate framework included with macOS.
+calyx builds with Rust 1.98.1, pinned in `rust-toolchain.toml` and installed
+automatically by rustup. It also needs a C toolchain, `make`,
+`pkg-config`, GMP, MPFR and FLINT 3.6. Linux builds use OpenBLAS. Apple silicon
+builds use the Accelerate framework included with macOS.
 
 ## Building FLINT
 
@@ -72,3 +73,29 @@ source-tree data path recorded when a developer build was compiled. If the
 full table is absent, it repeats that search for the packaged subset. Missing
 optional data is reported by `calyx --version --verbose`; it does not prevent
 calyx from starting.
+
+## Release archives
+
+The release workflow runs only for a version tag or when started by hand. It
+prepares one archive for Apple ARM64, Linux ARM64, and the general, AVX2 and
+AVX-512 Linux x86-64 targets. It uploads those archives as workflow artifacts;
+it does not create a release or publish a container image.
+
+An archive contains `bin/calyx`, the project `LICENSE`, bundled non-system
+libraries under `lib`, and packaged data under `share/calyx`. Linux archives
+leave only the GNU C library and its standard runtime libraries to the host.
+The Apple archive leaves macOS frameworks and system libraries to the host.
+All other libraries, including FLINT, GMP, MPFR and Linux's OpenBLAS, are
+bundled so the archive does not require build dependencies on the target
+system.
+
+Before publishing a release, download its workflow artifacts and attach the
+five archives by hand. Build the full Cunningham table separately and attach
+`cunningham.bin` as an optional release asset; CI deliberately does not build
+or upload the 124 MB file. Users can place it in an extracted archive's
+`share/calyx` directory or select its containing directory with `CALYX_DATA`.
+
+The top-level `Dockerfile` builds the general Linux x86-64 configuration. It
+uses `build/flint/linux-x86-64.sh`, bundles the same runtime libraries as the
+general archive, and leaves only the finished installation in a small runtime
+image. The release workflow builds and runs this image but never pushes it.
