@@ -1,5 +1,5 @@
-# Build, clippy and the test suite on every push and pull request, on Linux x86-64 and
-# macOS ARM64 (Apple silicon).
+# Build, clippy and the test suite on every push and pull request, on Linux x86-64, Linux
+# ARM64 and macOS ARM64 (Apple silicon).
 # No `cargo fmt --check`: the code is formatted by hand.
 name: CI
 
@@ -17,13 +17,17 @@ env:
 
 jobs:
   test:
-    name: test (${{ matrix.profile }})
-    runs-on: ubuntu-24.04
+    name: test (${{ matrix.os == 'ubuntu-24.04-arm' && 'Linux ARM64, ' || '' }}${{ matrix.profile }})
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-24.04]
         profile: [release, debug]
+        include:
+          - os: ubuntu-24.04-arm
+            profile: release
     steps:
       - uses: actions/checkout@v4
 
@@ -35,7 +39,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/flint
-          key: flint-${{ env.FLINT_VERSION }}-ubuntu-24.04
+          key: flint-${{ env.FLINT_VERSION }}-${{ matrix.os }}
 
       - name: Build FLINT
         if: steps.flint.outputs.cache-hit != 'true'
@@ -57,7 +61,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.profile }}
+          key: ${{ matrix.os }}-${{ matrix.profile }}
 
       - name: Build
         run: cargo build ${{ matrix.profile == 'release' && '--release' || '' }}
