@@ -91,6 +91,7 @@ DicksonSecond(<RngIntElt> n, <RngElt> a) -> RngUPolElt
 Dilog(<FldRatElt> x) -> FldComElt
 DirichletGroup(<RngIntElt> N, <Rng> R, <RngElt> z, <RngIntElt> r) -> GrpDrch
 Eigenspace(<Mtrx> A, <RngElt> e) -> ModTupRng
+Eigenspace(<MtrxSprs> A, <RngElt> e) -> ModTupRng
 ElementToSequence(<FldRatElt> q) -> [FldRatElt]
 Eltseq(<FldRatElt> q) -> [FldRatElt]
 Erf(<FldRatElt> x) -> FldReElt

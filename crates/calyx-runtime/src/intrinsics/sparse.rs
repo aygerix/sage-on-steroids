@@ -1,5 +1,11 @@
 //! Sparse matrices (#77), stored as sorted nonzero entries in each row.
 
+mod linalg;
+mod determinant;
+mod charpoly;
+mod structured;
+mod modular;
+
 use std::cell::RefCell;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
@@ -472,6 +478,10 @@ fn sparse_arg(a: &CallArgs, i: usize) -> RResult<Rc<SparseMatrix>> {
         Value::Sparse(m) => Ok(m.clone()),
         _ => Err(bad()),
     }
+}
+
+fn dense_value(it: &mut Interp, a: &SparseMatrix) -> RResult<Value> {
+    crate::intrinsics::matrices::mat_value(it, a.ring(), a.dense())
 }
 
 fn row_number(a: &CallArgs, k: usize, n: usize) -> RResult<usize> {
@@ -1446,4 +1456,8 @@ pub fn register(it: &mut Interp) {
     it.def("Transpose", "A::MtrxSprs -> MtrxSprs", "The transpose of A.", transpose);
     it.def("MultiplyByTranspose", "v::ModTupRngElt, A::MtrxSprs -> ModTupRngElt", "v times the transpose of A.", multiply_by_transpose);
     it.def("MultiplyByTranspose", "V::Mtrx, A::MtrxSprs -> Mtrx", "V times the transpose of A.", multiply_by_transpose);
+    linalg::register(it);
+    determinant::register(it);
+    charpoly::register(it);
+    modular::register(it);
 }
