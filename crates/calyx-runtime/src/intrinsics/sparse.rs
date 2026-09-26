@@ -10,7 +10,7 @@ use calyx_flint::mat::Mat;
 use rustc_hash::{FxHashMap, FxHasher};
 
 use crate::error::{RResult, RuntimeError};
-use crate::intrinsics::{arg_ge, one};
+use crate::intrinsics::{arg_ge, intv, one};
 use crate::interp::{CallArgs, Interp};
 use crate::print::{Level, Printer};
 use crate::rings::structure_key;
@@ -76,6 +76,36 @@ impl SparseMatrix {
             Rows::Words(rows) => rows.iter().map(Vec::len).sum(),
             Rows::Generic(rows) => rows.iter().map(Vec::len).sum(),
         }
+    }
+
+    fn row_len(&self, i: usize) -> usize {
+        match &self.rows {
+            Rows::Integers(rows) => rows[i].len(),
+            Rows::Words(rows) => rows[i].len(),
+            Rows::Generic(rows) => rows[i].len(),
+        }
+    }
+
+    fn columns(&self, i: usize) -> Vec<usize> {
+        match &self.rows {
+            Rows::Integers(rows) => rows[i].iter().map(|e| e.0).collect(),
+            Rows::Words(rows) => rows[i].iter().map(|e| e.0).collect(),
+            Rows::Generic(rows) => rows[i].iter().map(|e| e.0).collect(),
+        }
+    }
+
+    fn entries(&self, it: &Interp) -> Vec<(usize, usize, Value)> {
+        let mut out = Vec::with_capacity(self.nnz());
+        match &self.rows {
+            Rows::Integers(rows) => for (i, row) in rows.iter().enumerate() { for (j, x) in row { out.push((i, *j, Value::Int(x.clone()))); } },
+            Rows::Words(rows) => for (i, row) in rows.iter().enumerate() {
+                for (j, x) in row { out.push((i, *j, it.elem_to_value(self.ring(), Elem::from_word(&self.info().ctx, *x)))); }
+            },
+            Rows::Generic(rows) => for (i, row) in rows.iter().enumerate() {
+                for (j, x) in row { out.push((i, *j, it.elem_to_value(self.ring(), x.clone()))); }
+            },
+        }
+        out
     }
 
     pub fn same_as(&self, other: &SparseMatrix) -> bool {
@@ -358,6 +388,98 @@ fn sparse_structure(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
     one(Value::Struct(parent(it, &ring_arg(a, 0)?)?))
 }
 
+fn sparse_arg(a: &CallArgs, i: usize) -> RResult<Rc<SparseMatrix>> {
+    match &a.args[i] {
+        Value::Sparse(m) => Ok(m.clone()),
+        _ => Err(bad()),
+    }
+}
+
+fn row_number(a: &CallArgs, k: usize, n: usize) -> RResult<usize> {
+    let x = a.int(k)?;
+    match x.to_u64() {
+        Some(i) if (1..=n as u64).contains(&i) => Ok(i as usize - 1),
+        _ => Err(RuntimeError::runtime(format!("Argument {} ({x}) should be in the range [1 .. {n}]", k + 1))),
+    }
+}
+
+fn base_ring(_: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    one(sparse_arg(a, 0)?.ring().clone())
+}
+
+fn nrows(_: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    intv(Integer::from_u64(sparse_arg(a, 0)?.nrows as u64))
+}
+
+fn ncols(_: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    intv(Integer::from_u64(sparse_arg(a, 0)?.ncols as u64))
+}
+
+fn eltseq(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let m = sparse_arg(a, 0)?;
+    let entries = m.entries(it).into_iter().map(|(i, j, x)| Value::tuple(vec![Value::int(i as i64 + 1), Value::int(j as i64 + 1), x])).collect();
+    one(Value::seq(None, entries))
+}
+
+fn nnz(_: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    intv(Integer::from_u64(sparse_arg(a, 0)?.nnz() as u64))
+}
+
+fn density(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let m = sparse_arg(a, 0)?;
+    let size = m.nrows * m.ncols;
+    let q = if size == 0 {
+        calyx_flint::Rational::zero()
+    } else {
+        calyx_flint::Rational::new(&Integer::from_u64(m.nnz() as u64), &Integer::from_u64(size as u64)).expect("a nonzero denominator")
+    };
+    one(it.coerce(&Value::reals(crate::intrinsics::reals::default_bits()), &Value::rat(q))?)
+}
+
+fn support_row(_: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let m = sparse_arg(a, 0)?;
+    let i = row_number(a, 1, m.nrows)?;
+    one(Value::int_seq(m.columns(i).into_iter().map(|j| Integer::from_u64(j as u64 + 1))))
+}
+
+fn support(_: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let m = sparse_arg(a, 0)?;
+    let pairs = (0..m.nrows).flat_map(|i| m.columns(i).into_iter().map(move |j| Value::tuple(vec![Value::int(i as i64 + 1), Value::int(j as i64 + 1)]))).collect();
+    one(Value::seq(None, pairs))
+}
+
+fn row_weight(_: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let m = sparse_arg(a, 0)?;
+    let i = row_number(a, 1, m.nrows)?;
+    intv(Integer::from_u64(m.row_len(i) as u64))
+}
+
+fn row_weights(_: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let m = sparse_arg(a, 0)?;
+    one(Value::int_seq((0..m.nrows).map(|i| Integer::from_u64(m.row_len(i) as u64))))
+}
+
+fn column_weights_of(m: &SparseMatrix) -> Vec<usize> {
+    let mut weights = vec![0; m.ncols];
+    for i in 0..m.nrows {
+        for j in m.columns(i) {
+            weights[j] += 1;
+        }
+    }
+    weights
+}
+
+fn column_weight(_: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let m = sparse_arg(a, 0)?;
+    let j = row_number(a, 1, m.ncols)?;
+    intv(Integer::from_u64(column_weights_of(&m)[j] as u64))
+}
+
+fn column_weights(_: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
+    let m = sparse_arg(a, 0)?;
+    one(Value::int_seq(column_weights_of(&m).into_iter().map(|n| Integer::from_u64(n as u64))))
+}
+
 fn index_at(it: &Interp, a: &SparseMatrix, ids: &[Value], k: usize, n: usize) -> RResult<usize> {
     match &ids[k] {
         Value::Int(v) => match v.to_u64() {
@@ -466,4 +588,26 @@ pub fn register(it: &mut Interp) {
     it.def("DiagonalSparseMatrix", "Q::SeqEnum -> MtrxSprs", "The diagonal sparse matrix with diagonal Q.", diagonal_sparse);
     it.def("SparseMonomialMatrix", "g::GrpPermElt -> MtrxSprs", "The signed monomial sparse matrix of g.", sparse_monomial);
     it.def("SparseMatrixStructure", "R::Rng -> MtrxSprsStr", "The structure of sparse matrices over R.", sparse_structure);
+    for name in ["BaseRing", "CoefficientRing"] {
+        it.def(name, "A::MtrxSprs -> Rng", "The coefficient ring of A.", base_ring);
+    }
+    for name in ["NumberOfRows", "Nrows"] {
+        it.def(name, "A::MtrxSprs -> RngIntElt", "The number of rows of A.", nrows);
+    }
+    for name in ["NumberOfColumns", "Ncols"] {
+        it.def(name, "A::MtrxSprs -> RngIntElt", "The number of columns of A.", ncols);
+    }
+    for name in ["ElementToSequence", "Eltseq"] {
+        it.def(name, "A::MtrxSprs -> SeqEnum", "The nonzero entries of A as triples.", eltseq);
+    }
+    for name in ["NumberOfNonZeroEntries", "NNZEntries"] {
+        it.def(name, "A::MtrxSprs -> RngIntElt", "The number of nonzero entries of A.", nnz);
+    }
+    it.def("Density", "A::MtrxSprs -> FldReElt", "The proportion of nonzero entries of A.", density);
+    it.def("Support", "A::MtrxSprs, i::RngIntElt -> [RngIntElt]", "The support of row i of A.", support_row);
+    it.def("Support", "A::MtrxSprs -> SeqEnum", "The positions of the nonzero entries of A.", support);
+    it.def("RowWeight", "A::MtrxSprs, i::RngIntElt -> RngIntElt", "The number of nonzero entries in row i.", row_weight);
+    it.def("RowWeights", "A::MtrxSprs -> [RngIntElt]", "The row weights of A.", row_weights);
+    it.def("ColumnWeight", "A::MtrxSprs, j::RngIntElt -> RngIntElt", "The number of nonzero entries in column j.", column_weight);
+    it.def("ColumnWeights", "A::MtrxSprs -> [RngIntElt]", "The column weights of A.", column_weights);
 }
