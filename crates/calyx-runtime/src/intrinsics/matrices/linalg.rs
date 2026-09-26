@@ -23,11 +23,10 @@ use crate::intrinsics::{boolv, intv, one};
 use crate::interp::{CallArgs, Interp};
 use crate::value::*;
 
-fn gr(e: GrError) -> RuntimeError {
+pub(super) fn gr(e: GrError) -> RuntimeError {
     crate::rings::gr_error(e, "Arithmetic failed")
 }
 
-/// Argument i, a square matrix.
 /// The kinds of rings the linear algebra here knows.
 #[derive(Clone, Copy, PartialEq)]
 enum Kind {
@@ -889,7 +888,7 @@ fn kernel_basis(x: &Mtrx) -> RResult<Mat> {
 }
 
 /// The kernel of a matrix with m rows, as a subspace of R^m.
-fn kernel_space(it: &mut Interp, x: &Mtrx) -> RResult<Value> {
+pub(super) fn kernel_space(it: &mut Interp, x: &Mtrx) -> RResult<Value> {
     let basis = kernel_basis(x)?;
     let ring = x.ring().clone();
     let full = parent(it, &ring, 1, x.m.nrows(), Shape::Tuples)?;
@@ -1210,19 +1209,21 @@ const KERNEL_ALS: &[&str] = &["Default", "Hermite", "LLL", "Modular"];
 
 /// Magma's errors for a parameter whose value does not have the type of its
 /// default, or for an `Al` that is not one of `als`.
-fn check_params(it: &Interp, a: &CallArgs, params: &[(&str, Value)], als: &[&str]) -> RResult<()> {
-    let error = |msg: String| {
-        let types: Vec<String> = a.args.iter().map(|v| it.type_name_ext(v)).collect();
-        Err(RuntimeError::runtime(format!("{msg}\nArgument types given: {}", types.join(", "))))
-    };
+pub(super) fn check_params(it: &Interp, a: &CallArgs, params: &[(&str, Value)], als: &[&str]) -> RResult<()> {
     for (p, default) in params {
         match a.param(p) {
-            Some(v) if std::mem::discriminant(v) != std::mem::discriminant(default) => return error(format!("Bad type for parameter '{p}'")),
-            Some(Value::Str(s)) if !als.contains(&s.as_str()) => return error(format!("Bad value for parameter '{p}' ({})", s.as_str())),
+            Some(v) if std::mem::discriminant(v) != std::mem::discriminant(default) => return Err(with_types(it, a, &format!("Bad type for parameter '{p}'"))),
+            Some(Value::Str(s)) if !als.contains(&s.as_str()) => return Err(with_types(it, a, &format!("Bad value for parameter '{p}' ({})", s.as_str()))),
             _ => {}
         }
     }
     Ok(())
+}
+
+/// Magma's error `msg` followed by the types of the arguments.
+pub(super) fn with_types(it: &Interp, a: &CallArgs, msg: &str) -> RuntimeError {
+    let types: Vec<String> = a.args.iter().map(|v| it.type_name_ext(v)).collect();
+    RuntimeError::runtime(format!("{msg}\nArgument types given: {}", types.join(", ")))
 }
 
 pub fn register(it: &mut Interp) {

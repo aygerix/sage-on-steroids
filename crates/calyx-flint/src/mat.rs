@@ -622,6 +622,59 @@ impl Mat {
         Ok((0..=n).map(|j| c.entry(0, j)).collect())
     }
 
+    /// The coefficients of the minimal polynomial of a square matrix over
+    /// the integers or a field, the constant term first: FLINT's modular
+    /// algorithms over the integers and the rationals, and otherwise its
+    /// Krylov-space one over a field.
+    pub fn minpoly(&self) -> GrResult<Vec<Elem>> {
+        assert_eq!(self.nrows(), self.ncols(), "minimal polynomial of a matrix that is not square");
+        if self.nrows() == 0 {
+            return Ok(vec![Elem::one(&self.ctx)?]);
+        }
+        let elem = |f: &mut dyn FnMut(*mut c_void)| {
+            let mut e = Elem::new(&self.ctx);
+            f(e.as_mut_ptr());
+            e
+        };
+        unsafe {
+            match self.ctx.kind() {
+                CtxKind::Integers => {
+                    let mut p = sys::fmpz_poly_struct::default();
+                    sys::fmpz_poly_init(&mut p);
+                    sys::fmpz_mat_minpoly(&mut p, &self.fmpz_view());
+                    let cs = (0..p.length as usize).map(|i| elem(&mut |e| sys::fmpz_set(e.cast(), p.coeffs.add(i)))).collect();
+                    sys::fmpz_poly_clear(&mut p);
+                    Ok(cs)
+                }
+                CtxKind::Rationals => {
+                    let mut p = sys::fmpq_poly_struct::default();
+                    sys::fmpq_poly_init(&mut p);
+                    sys::fmpq_mat_minpoly(&mut p, &self.fmpq_view());
+                    let cs = (0..p.length).map(|i| elem(&mut |e| sys::fmpq_poly_get_coeff_fmpq(e.cast(), &p, i))).collect();
+                    sys::fmpq_poly_clear(&mut p);
+                    Ok(cs)
+                }
+                CtxKind::Nmod(_) if self.ctx.is_field() == Truth::True => {
+                    let view = self.nmod_view();
+                    let mut p = sys::nmod_poly_struct::default();
+                    sys::nmod_poly_init(&mut p, view.mod_.n);
+                    sys::nmod_mat_minpoly(&mut p, &view);
+                    let cs = (0..p.length as usize).map(|i| Elem::from_word(&self.ctx, *p.coeffs.add(i))).collect();
+                    sys::nmod_poly_clear(&mut p);
+                    Ok(cs)
+                }
+                _ => {
+                    let mut p = sys::gr_poly_struct::default();
+                    sys::gr_poly_init(&mut p, self.ctx.ptr());
+                    let st = sys::gr_mat_minpoly_field(&mut p, &self.raw, self.ctx.ptr());
+                    let cs = (0..p.length).map(|i| elem(&mut |e| assert_eq!(sys::gr_poly_get_coeff_scalar(e, &p, i, self.ctx.ptr()), 0))).collect();
+                    sys::gr_poly_clear(&mut p, self.ctx.ptr());
+                    check(st).map(|_| cs)
+                }
+            }
+        }
+    }
+
     /// A basis of the left kernel {v : v·A = 0} of a matrix over a field,
     /// as Magma's `KernelMatrix` gives it: from the reduced echelon form of
     /// the transpose, a row for each column f without a pivot, with -1 in
