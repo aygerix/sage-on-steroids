@@ -12,12 +12,8 @@ depends on Magma's internal hash order (the iteration and printing order
 of some sets) live in `../scripts/` instead, with outputs blessed from
 calyx.
 
-To add or refresh a test, run the script through Magma and save its
-output, for example with `tools/magma-calc.py`:
-
-```sh
-python3 tools/magma-calc.py < crates/calyx-cli/tests/compat/NAME.m > crates/calyx-cli/tests/compat/NAME.out
-```
+To add or refresh a test, run the script through Magma 2.29 and save what
+it prints as `NAME.out`.
 
 The expected outputs are observations of Magma's behaviour on these
 scripts; no Magma code or documentation is included.
