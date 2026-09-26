@@ -33,3 +33,30 @@ false
      ^
 Runtime error in 'eq': Arguments have no covering structure
 
+
+>> A * B;
+     ^
+Runtime error in '*': Bad argument types
+Argument types given: AlgAss, AlgAss
+
+
+>> A + 1;
+     ^
+Runtime error in '+': Bad argument types
+Argument types given: AlgAss, RngIntElt
+
+
+>> A * IdentityMatrix(Q, 2);
+     ^
+Runtime error in '*': Bad argument types
+Argument types given: AlgAss, AlgMatElt[FldRat]
+
+true
+true
+false
+
+>> 2 in A; (1/2) in A; B.1 in A; A subset A;
+                                   ^
+Runtime error in 'subset': Bad argument types
+Argument types given: AlgAss, AlgAss
+

@@ -92,9 +92,17 @@ pub trait ExtKind: Any {
         Ok(Err(None))
     }
 
-    /// A binary operator with an element of this kind among the operands,
-    /// or None when the kind has no rule for it.
+    /// A binary operator with an element of this kind among the operands
+    /// (`x in S` too, for any structure S), or None when the kind has no
+    /// rule for it.
     fn binop(&self, _it: &mut Interp, _op: BinOp, _a: &Value, _b: &Value) -> RResult<Option<Value>> {
+        Ok(None)
+    }
+
+    /// A binary operator with a structure of this kind among the operands
+    /// and no element of an `ExtKind` (`L + M`, `n * L`, `L subset M`,
+    /// `v in L`), or None to leave it to the core's rules.
+    fn struct_binop(&self, _it: &mut Interp, _op: BinOp, _a: &Value, _b: &Value) -> RResult<Option<Value>> {
         Ok(None)
     }
 
@@ -182,4 +190,12 @@ pub fn operand_kind<'a>(a: &'a Value, b: &'a Value) -> Option<&'a dyn ExtKind> {
         (Value::Ext(x), _) | (_, Value::Ext(x)) => Some(x.kind()),
         _ => None,
     }
+}
+
+/// The kind of the first structure of an `ExtKind` among a and b.
+pub fn struct_operand_kind<'a>(a: &'a Value, b: &'a Value) -> Option<&'a dyn ExtKind> {
+    [a, b].into_iter().find_map(|v| match v {
+        Value::Struct(st) => kind(st),
+        _ => None,
+    })
 }

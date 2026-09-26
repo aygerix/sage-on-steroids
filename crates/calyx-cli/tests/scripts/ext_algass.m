@@ -12,3 +12,8 @@ IsCoercible(A, 3); IsCoercible(A, B.1); IsCoercible(Q, 2*x); IsCoercible(Integer
 Type(x); Type(A); Parent(x) eq A; x in A; x in B;
 -x; -(A!0); x^-2; (3*x)^2 - 9*x;
 A eq B;
+// Operators on the algebras themselves go to the kind's structure hook.
+A * B;
+A + 1;
+A * IdentityMatrix(Q, 2);
+2 in A; (1/2) in A; B.1 in A; A subset A;

@@ -154,6 +154,8 @@ impl Interp {
             self.nfd_binop(op, &a, &b)?
         } else if let Some(k) = crate::ext::operand_kind(&a, &b) {
             k.binop(self, op, &a, &b)?
+        } else if let Some(k) = crate::ext::struct_operand_kind(&a, &b) {
+            k.struct_binop(self, op, &a, &b)?
         } else if matches!(a, Value::Sparse(_)) || matches!(b, Value::Sparse(_)) {
             crate::intrinsics::sparse::binop(self, op, &a, &b).map_err(|e| e.in_context(op.intrinsic_name()))?
         } else if matches!(a, Value::Mat(_)) || matches!(b, Value::Mat(_)) {
