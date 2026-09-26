@@ -30,6 +30,9 @@
 //! over a middle range of lengths (`Cutoffs`), on FLINT's classical
 //! algorithms below it and on its fast ones above. In the lanes form gcds
 //! keep FLINT's algorithms, over the kernels' products and division.
+//! Products of matrices run on the kernels from small sizes on, and for
+//! large matrices over odd characteristic through FLINT's products over
+//! GF(p) (`mat`).
 
 use std::ffi::{c_int, c_void};
 use std::ops::Range;
@@ -72,23 +75,40 @@ struct Cutoffs {
     /// second, FLINT's half-gcd above.
     gcd: (usize, usize),
     xgcd: (usize, usize),
+    /// Products of matrices, by the least of their dimensions: FLINT's
+    /// classical product below the first, the kernels up to the second, and
+    /// products through GF(p) above. The kernels also take the products
+    /// FLINT would make by Kronecker substitution.
+    mat_mul: (usize, usize),
 }
 
 impl SmallFq {
     fn cutoffs(&self) -> Cutoffs {
         let n = self.n;
+        // Over GF(p) FLINT's products pack several entries into a word, and
+        // from about 400 on go by Strassen's method.
+        let via_p = if n <= 8 { 560 } else { usize::MAX };
         match self.form() {
             Form::Bits => Cutoffs {
                 mullow: (2, if n <= 4 { 96 } else { 64 }, 256 * n),
                 divrem: (2, 3, 24, 640 * n),
                 gcd: (6, 8192),
                 xgcd: (6, 768 * n),
+                mat_mul: (1, usize::MAX),
             },
             Form::Planes => Cutoffs {
                 mullow: (n + 1, 64 * (n + 1), if n == 1 { 512 } else { 3072 / n }),
                 divrem: (n + 1, (8 * (n - 1)).max(8), 72 * n, if n == 1 { 1536 } else { 9216 / n }),
                 gcd: (if n <= 2 { 16 } else { 16 * (n - 1) }, 8192),
                 xgcd: (if n <= 2 { 12 } else { 24 }, 8192),
+                mat_mul: (
+                    match n {
+                        1 | 2 => 8,
+                        3 => 10,
+                        _ => 13,
+                    },
+                    via_p,
+                ),
             },
             Form::Lanes => Cutoffs {
                 mullow: ((n + 1).max(3), 40 * n + 64, if n == 1 { 128 } else { 512 }),
@@ -115,6 +135,7 @@ impl SmallFq {
                         _ => 8192,
                     },
                 ),
+                mat_mul: (if n <= 8 { 8 } else { 10 }, via_p),
             },
         }
     }
@@ -226,6 +247,14 @@ impl SmallFq {
 
     fn tabs(&self) -> &Tabs {
         self.tabs.get_or_init(|| self.build(self.form() == Form::Planes))
+    }
+
+    fn logs(&self) -> &Logs {
+        match self.tabs() {
+            Tabs::Planes(t) => &t.logs,
+            Tabs::Lanes(t) => &t.logs,
+            Tabs::Bits(t) => &t.logs,
+        }
     }
 
     /// The form of the field's rows: bits for p = 2, planes for degrees up
@@ -1150,9 +1179,12 @@ impl SmallFq {
 
 // ----- the gr context ----------------------------------------------------------------
 
+mod mat;
+
 type Clear = unsafe extern "C" fn(GrCtx);
 type Mullow = unsafe extern "C" fn(*mut c_void, *const c_void, sys::slong, *const c_void, sys::slong, sys::slong, GrCtx) -> c_int;
 type Divrem = unsafe extern "C" fn(*mut c_void, *mut c_void, *const c_void, sys::slong, *const c_void, sys::slong, GrCtx) -> c_int;
+type MatMul = unsafe extern "C" fn(*mut sys::gr_mat_struct, *const sys::gr_mat_struct, *const sys::gr_mat_struct, GrCtx) -> c_int;
 
 /// What a field with Zech logarithms made by calyx adds to its gr context,
 /// at data word 1: its own copy of FLINT's method table, FLINT's methods
@@ -1162,6 +1194,7 @@ struct Ext {
     clear: Clear,
     mullow: Mullow,
     divrem: Divrem,
+    mat_mul: MatMul,
     cut: Cutoffs,
     k: SmallFq,
 }
@@ -1180,8 +1213,9 @@ unsafe fn ext(ctx: GrCtx) -> *mut Ext {
 
 /// Give `c`, the gr context of a field with Zech logarithms just made by
 /// FLINT (and zeroed before), its extension: the context's methods become
-/// FLINT's, with the kernels in place of polynomial products, division and
-/// gcds, and with a clear that frees the extension too.
+/// FLINT's, with the kernels in place of polynomial products, division,
+/// gcds and products of matrices, and with a clear that frees the extension
+/// too.
 pub(crate) unsafe fn install(c: GrCtx) {
     unsafe {
         let z = fq_zech(c);
@@ -1193,15 +1227,17 @@ pub(crate) unsafe fn install(c: GrCtx) {
             clear: std::mem::transmute::<unsafe extern "C" fn() -> c_int, Clear>(method(sys::gr_method_GR_METHOD_CTX_CLEAR)),
             mullow: std::mem::transmute::<unsafe extern "C" fn() -> c_int, Mullow>(method(sys::gr_method_GR_METHOD_POLY_MULLOW)),
             divrem: std::mem::transmute::<unsafe extern "C" fn() -> c_int, Divrem>(method(sys::gr_method_GR_METHOD_POLY_DIVREM)),
+            mat_mul: std::mem::transmute::<unsafe extern "C" fn() -> c_int, MatMul>(method(sys::gr_method_GR_METHOD_MAT_MUL)),
             cut: k.cutoffs(),
             k,
         });
-        let ours: [(sys::gr_method, *const ()); 5] = [
+        let ours: [(sys::gr_method, *const ()); 6] = [
             (sys::gr_method_GR_METHOD_CTX_CLEAR, ctx_clear as *const ()),
             (sys::gr_method_GR_METHOD_POLY_MULLOW, poly_mullow as *const ()),
             (sys::gr_method_GR_METHOD_POLY_DIVREM, poly_divrem as *const ()),
             (sys::gr_method_GR_METHOD_POLY_GCD, poly_gcd as *const ()),
             (sys::gr_method_GR_METHOD_POLY_XGCD, poly_xgcd as *const ()),
+            (sys::gr_method_GR_METHOD_MAT_MUL, mat::mat_mul as *const ()),
         ];
         for (i, f) in ours {
             e.methods[i as usize] = Some(std::mem::transmute::<*const (), unsafe extern "C" fn() -> c_int>(f));
@@ -1357,7 +1393,7 @@ mod tests {
         fn fq_zech_poly_divrem(q: *mut c_void, r: *mut c_void, a: *const c_void, b: *const c_void, ctx: *const c_void);
     }
 
-    struct Lcg(u64);
+    pub(super) struct Lcg(pub(super) u64);
 
     impl Lcg {
         fn next(&mut self) -> u64 {
@@ -1373,7 +1409,7 @@ mod tests {
     /// GF(p^n) with Zech logarithms defined by the Conway polynomial (or x -
     /// g for g primitive, for large p): calyx's field, with the kernels, and
     /// FLINT's own, with FLINT's methods.
-    fn fields(p: u64, n: u64) -> (Rc<Ctx>, Rc<Ctx>) {
+    pub(super) fn fields(p: u64, n: u64) -> (Rc<Ctx>, Rc<Ctx>) {
         let c = conway_polynomial(p, n).unwrap_or_else(|| match (p, n) {
             (65521, 1) => vec![Integer::from_u64(p - 17), Integer::one()],
             (1048573, 1) => vec![Integer::from_u64(p - 2), Integer::one()],
@@ -1420,7 +1456,7 @@ mod tests {
         if rng.below(5) == 0 { k.qm1 } else { rng.next() % k.qm1 }
     }
 
-    fn row(k: &SmallFq, len: usize, rng: &mut Lcg) -> Vec<u64> {
+    pub(super) fn row(k: &SmallFq, len: usize, rng: &mut Lcg) -> Vec<u64> {
         (0..len).map(|_| word(k, rng)).collect()
     }
 
@@ -1663,14 +1699,15 @@ mod tests {
     /// The kernels at every length, and in a window only, so that FLINT's
     /// algorithms on either side of it take their turns: with the measured
     /// cutoffs, the three sets the tests run with.
-    const EVERYWHERE: Cutoffs = Cutoffs { mullow: (1, 1, usize::MAX), divrem: (1, 1, 1, usize::MAX), gcd: (2, usize::MAX), xgcd: (2, usize::MAX) };
-    const WINDOW: Cutoffs = Cutoffs { mullow: (4, 64, 40), divrem: (4, 8, 64, 40), gcd: (8, 40), xgcd: (8, 40) };
+    const EVERYWHERE: Cutoffs =
+        Cutoffs { mullow: (1, 1, usize::MAX), divrem: (1, 1, 1, usize::MAX), gcd: (2, usize::MAX), xgcd: (2, usize::MAX), mat_mul: (1, usize::MAX) };
+    const WINDOW: Cutoffs = Cutoffs { mullow: (4, 64, 40), divrem: (4, 8, 64, 40), gcd: (8, 40), xgcd: (8, 40), mat_mul: (4, 40) };
 
     fn cutoff_sets(k: &SmallFq) -> [(Cutoffs, &'static str); 3] {
         [(k.cutoffs(), "measured"), (EVERYWHERE, "everywhere"), (WINDOW, "window")]
     }
 
-    fn set_cutoffs(ctx: &Ctx, cut: Cutoffs) {
+    pub(super) fn set_cutoffs(ctx: &Ctx, cut: Cutoffs) {
         unsafe { (*ext(ctx.ptr())).cut = cut };
     }
 
