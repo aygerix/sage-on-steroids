@@ -44,6 +44,8 @@ v := Basis(V)[1]; v @@ g; Type(v @@ g); (V![2/3]) @@ g;
 g(v);
 g(V![2/3]);
 (5/7) @@ g;
+[2/3] @@ g; [2/3] @@ f; A![2/3] @@ f;
+V![2/3] @@ g;
 VectorSpace(Q, GF(5));
 
 // RationalReconstruction of a matrix over a prime field: every entry, or
