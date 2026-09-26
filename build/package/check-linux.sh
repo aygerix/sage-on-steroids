@@ -32,7 +32,8 @@ avx2_flint=$(find "$package_root/lib/glibc-hwcaps/x86-64-v3" -maxdepth 1 -type f
 if [[ -n "$avx2_flint" ]]; then
     default_trace=$(LD_DEBUG=libs OPENBLAS_NUM_THREADS=1 "$package_root/bin/calyx" --version 2>&1 >/dev/null)
     grep -Eq 'calling init: .*/glibc-hwcaps/x86-64-v3/libflint\.so' <<<"$default_trace"
-    grep -Fq 'FLINT CFLAGS: -O3 -march=x86-64-v3' <<<"$verbose"
+    grep -Eq '^FLINT CFLAGS: .*[-]O3([[:space:]]|$)' <<<"$verbose"
+    grep -Eq '^FLINT CFLAGS: .*[-]march=x86-64-v3([[:space:]]|$)' <<<"$verbose"
 
     loader=$(ldd "$package_root/bin/calyx" | sed -n 's|^[[:space:]]*\(/[^ ]*/ld-linux[^ ]*\).*|\1|p' | head -n 1)
     if [[ -z "$loader" ]]; then
@@ -44,6 +45,7 @@ if [[ -n "$avx2_flint" ]]; then
     general_trace=$(LD_DEBUG=libs OPENBLAS_NUM_THREADS=1 "$loader" --glibc-hwcaps-mask x86-64-v2 --library-path "$package_root/lib" \
         "$package_root/bin/calyx" --version 2>&1 >/dev/null)
     grep -Eq 'calling init: .*/lib/libflint\.so' <<<"$general_trace"
-    grep -Fq 'FLINT CFLAGS: -O3 -march=x86-64' <<<"$general_verbose"
-    ! grep -Fq 'FLINT CFLAGS: -O3 -march=x86-64-v3' <<<"$general_verbose"
+    grep -Eq '^FLINT CFLAGS: .*[-]O3([[:space:]]|$)' <<<"$general_verbose"
+    grep -Eq '^FLINT CFLAGS: .*[-]march=x86-64([[:space:]]|$)' <<<"$general_verbose"
+    ! grep -Eq '^FLINT CFLAGS: .*[-]march=x86-64-v3([[:space:]]|$)' <<<"$general_verbose"
 fi
