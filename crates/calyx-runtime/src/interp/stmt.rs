@@ -416,8 +416,13 @@ impl Interp {
             St::Clear => {
                 self.globals.clear();
             }
-            St::Save(_) | St::Restore(_) => {
-                return Err(RuntimeError::runtime("Workspace save/restore is not supported"));
+            St::Save(path) => {
+                let Value::Str(path) = self.eval(path, f)? else { return Err(RuntimeError::runtime("save filename must be a string")) };
+                crate::intrinsics::io::save_workspace(self, &path)?;
+            }
+            St::Restore(path) => {
+                let Value::Str(path) = self.eval(path, f)? else { return Err(RuntimeError::runtime("restore filename must be a string")) };
+                crate::intrinsics::io::restore_workspace(self, &path)?;
             }
             St::Freeze => {}
         }

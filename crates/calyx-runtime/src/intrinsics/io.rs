@@ -20,6 +20,7 @@ const OBJECT_VERSION: u16 = 1;
 const OBJECT_HEADER: usize = 18;
 const MAX_OBJECT_SIZE: usize = 256 * 1024 * 1024;
 const MAX_OBJECT_DEPTH: usize = 128;
+const WORKSPACE_MAGIC: &[u8; 8] = b"CALYXWS\0";
 
 impl Interp {
     /// Append text to a file named by a string, or write to an open file.
@@ -755,6 +756,57 @@ fn write_object(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
 
 fn write_object_check(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
     boolv(write_object(it, a).is_ok())
+}
+
+/// Save user globals in calyx's own versioned workspace format.
+pub fn save_workspace(it: &Interp, name: &str) -> RResult<()> {
+    let mut globals: Vec<_> = it.globals.iter().collect();
+    globals.sort_by_key(|(name, _)| name.as_str());
+    let mut data = Vec::new();
+    data.extend_from_slice(WORKSPACE_MAGIC);
+    data.extend_from_slice(&OBJECT_VERSION.to_le_bytes());
+    put_u64(&mut data, globals.len() as u64);
+    for (name, value) in globals {
+        put_blob(&mut data, name.as_str().as_bytes());
+        data.extend_from_slice(&encode_object(it, value).map_err(|e| e.in_context(format!("saving global '{name}'")))?);
+    }
+    std::fs::write(name, data).map_err(|e| RuntimeError::runtime(format!("Could not save workspace to \"{name}\": {e}")))
+}
+
+/// Validate a complete calyx workspace before replacing the current globals.
+pub fn restore_workspace(it: &mut Interp, name: &str) -> RResult<()> {
+    let data = std::fs::read(name).map_err(|e| RuntimeError::runtime(format!("Could not restore workspace from \"{name}\": {e}")))?;
+    if data.len() < OBJECT_HEADER || &data[..8] != WORKSPACE_MAGIC {
+        return Err(RuntimeError::runtime("Invalid calyx workspace: bad or truncated format marker"));
+    }
+    let version = u16::from_le_bytes(data[8..10].try_into().unwrap());
+    if version != OBJECT_VERSION {
+        return Err(RuntimeError::runtime(format!("Invalid calyx workspace: unsupported version {version}")));
+    }
+    let count = usize::try_from(u64::from_le_bytes(data[10..18].try_into().unwrap())).map_err(|_| RuntimeError::runtime("Invalid calyx workspace: entry count is too large"))?;
+    let mut pos = OBJECT_HEADER;
+    let mut globals = Vec::with_capacity(count.min(1024));
+    let mut names = std::collections::HashSet::new();
+    for _ in 0..count {
+        let mut reader = ObjectReader { data: &data[pos..], pos: 0 };
+        let text = std::str::from_utf8(reader.blob()?).map_err(|_| RuntimeError::runtime("Invalid calyx workspace: global name is not UTF-8"))?;
+        if !names.insert(text.to_string()) {
+            return Err(RuntimeError::runtime(format!("Invalid calyx workspace: duplicate global '{text}'")));
+        }
+        pos += reader.pos;
+        let n = object_frame_len(&data[pos..])?.ok_or_else(|| RuntimeError::runtime("Invalid calyx workspace: truncated object header"))?;
+        if pos.checked_add(n).is_none_or(|end| end > data.len()) {
+            return Err(RuntimeError::runtime("Invalid calyx workspace: truncated object"));
+        }
+        let value = decode_object(it, &data[pos..pos + n])?;
+        globals.push((crate::sym::Sym::new(text), value));
+        pos += n;
+    }
+    if pos != data.len() {
+        return Err(RuntimeError::runtime("Invalid calyx workspace: trailing data"));
+    }
+    it.replace_globals(globals);
+    Ok(())
 }
 
 fn gets(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {

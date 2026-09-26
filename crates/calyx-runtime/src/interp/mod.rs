@@ -277,6 +277,20 @@ impl Interp {
         }
     }
 
+    /// Replace all user globals after a workspace has been fully decoded.
+    pub fn replace_globals(&mut self, values: Vec<(Sym, Value)>) {
+        let old: Vec<Sym> = self.globals.keys().copied().collect();
+        for name in old {
+            self.remove_global(name);
+        }
+        for (name, value) in values {
+            if let Some(cell) = value.name_cell() {
+                *cell.borrow_mut() = Some(name);
+            }
+            self.set_global(name, value);
+        }
+    }
+
     /// The slot of a global (undeclared ones come last).
     fn slot(&self, name: Sym) -> u64 {
         self.global_slots.get(&name).copied().unwrap_or(u64::MAX)
