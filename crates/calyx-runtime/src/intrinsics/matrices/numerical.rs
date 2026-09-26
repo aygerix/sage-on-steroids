@@ -46,6 +46,13 @@ fn work(m: &Mtrx) -> RResult<(Mat, u64, bool)> {
     Ok((m.m.change_ring(&ctx).map_err(gr)?, bits, complex))
 }
 
+fn work_svd(m: &Mtrx) -> RResult<(Mat, u64, bool)> {
+    let (bits, complex) = kind(m)?;
+    let work_bits = bits.saturating_mul(2).saturating_add(GUARD_BITS);
+    let ctx = if complex { Ctx::complex_float(work_bits) } else { Ctx::real_float(work_bits) };
+    Ok((m.m.change_ring(&ctx).map_err(gr)?, bits, complex))
+}
+
 fn round(m: &Mat, ctx: &Rc<Ctx>) -> RResult<Mat> {
     m.change_ring(ctx).map_err(gr)
 }
@@ -431,25 +438,36 @@ fn svd(a: &Mat) -> RResult<Svd> {
     }
 }
 
-fn epsilon(a: &CallArgs, bits: u64, sigma: &[Real]) -> RResult<Real> {
+fn svd_jacobi(a: &Mat) -> RResult<Svd> {
+    if a.nrows() >= a.ncols() {
+        svd_tall(a)
+    } else {
+        let t = svd_tall(&adjoint(a)?)?;
+        Ok(Svd { s: adjoint(&t.s)?, u: t.v, v: t.u, sigma: t.sigma })
+    }
+}
+
+fn epsilon(a: &CallArgs, bits: u64, dimension: usize, sigma: &[Real]) -> RResult<Real> {
     match a.param("Epsilon") {
-        Some(Value::Undef) | None => Ok(sigma.first().map_or_else(|| Real::zero(bits), |x| x.mul(&unit_roundoff(bits)))),
+        Some(Value::Undef) | None => {
+            Ok(sigma.first().map_or_else(|| Real::zero(bits), |x| x.mul(&unit_roundoff(bits)).mul_integer(&Integer::from_u64(dimension as u64))))
+        }
         Some(Value::Real(x)) => Ok(x.x.round_to(bits).abs()),
         _ => Err(bad()),
     }
 }
 
-fn numerical_rank_of(a: &CallArgs, bits: u64, sigma: &[Real]) -> RResult<usize> {
-    let e = epsilon(a, bits, sigma)?;
+fn numerical_rank_of(a: &CallArgs, bits: u64, matrix: &Mat, sigma: &[Real]) -> RResult<usize> {
+    let e = epsilon(a, bits, matrix.nrows().max(matrix.ncols()), sigma)?;
     Ok(sigma.iter().filter(|x| x.cmp_magma(&e) == Ordering::Greater).count())
 }
 
 fn numerical_inverse(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
     let x = square(a, 0)?;
     if x.m.nrows() == 0 { return Err(RuntimeError::runtime("Argument 1 has degree zero")); }
-    let (w, bits, _) = work(&x)?;
-    let z = svd(&w)?;
-    if numerical_rank_of(a, bits, &z.sigma)? != w.nrows() {
+    let (w, bits, _) = work_svd(&x)?;
+    let z = svd_jacobi(&w)?;
+    if numerical_rank_of(a, bits, &w, &z.sigma)? != w.nrows() {
         return Err(RuntimeError::runtime("Matrix is numerically singular"));
     }
     let p = pseudoinverse_of(&z, w.nrows())?;
@@ -458,9 +476,9 @@ fn numerical_inverse(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
 
 fn numerical_rank(_it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
     let x = mat_arg(a, 0)?.clone();
-    let (w, bits, _) = work(&x)?;
-    let z = svd(&w)?;
-    intv(Integer::from_u64(numerical_rank_of(a, bits, &z.sigma)? as u64))
+    let (w, bits, _) = work_svd(&x)?;
+    let z = svd_jacobi(&w)?;
+    intv(Integer::from_u64(numerical_rank_of(a, bits, &w, &z.sigma)? as u64))
 }
 
 fn kernel_of(z: &Svd, rank: usize) -> Mat {
@@ -473,17 +491,17 @@ fn image_of(z: &Svd, rank: usize) -> Mat {
 
 fn numerical_kernel(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
     let x = mat_arg(a, 0)?.clone();
-    let (w, bits, _) = work(&x)?;
-    let z = svd(&w)?;
-    let rank = numerical_rank_of(a, bits, &z.sigma)?;
+    let (w, bits, _) = work_svd(&x)?;
+    let z = svd_jacobi(&w)?;
+    let rank = numerical_rank_of(a, bits, &w, &z.sigma)?;
     one(mat_value(it, x.ring(), round(&kernel_of(&z, rank), x.m.ctx())?)?)
 }
 
 fn numerical_image(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
     let x = mat_arg(a, 0)?.clone();
-    let (w, bits, _) = work(&x)?;
-    let z = svd(&w)?;
-    let rank = numerical_rank_of(a, bits, &z.sigma)?;
+    let (w, bits, _) = work_svd(&x)?;
+    let z = svd_jacobi(&w)?;
+    let rank = numerical_rank_of(a, bits, &w, &z.sigma)?;
     one(mat_value(it, x.ring(), round(&image_of(&z, rank), x.m.ctx())?)?)
 }
 
@@ -498,9 +516,9 @@ fn pseudoinverse_of(z: &Svd, rank: usize) -> RResult<Mat> {
 
 fn numerical_pseudoinverse(it: &mut Interp, a: &mut CallArgs) -> RResult<Vals> {
     let x = mat_arg(a, 0)?.clone();
-    let (w, bits, _) = work(&x)?;
-    let z = svd(&w)?;
-    let rank = numerical_rank_of(a, bits, &z.sigma)?;
+    let (w, bits, _) = work_svd(&x)?;
+    let z = svd_jacobi(&w)?;
+    let rank = numerical_rank_of(a, bits, &w, &z.sigma)?;
     one(mat_value(it, x.ring(), round(&pseudoinverse_of(&z, rank)?, x.m.ctx())?)?)
 }
 
@@ -511,14 +529,15 @@ fn solve_numerically(_it: &mut Interp, a: &mut CallArgs) -> RResult<(Rc<Mtrx>, R
     if y.m.ncols() != x.m.ncols() || y.ring() != x.ring() {
         return Err(RuntimeError::runtime("Arguments have incompatible dimensions or coefficient rings"));
     }
-    let (w, bits, _) = work(&x)?;
+    let (w, bits, _) = work_svd(&x)?;
     let yw = y.m.change_ring(w.ctx()).map_err(gr)?;
-    let z = svd(&w)?;
-    let rank = numerical_rank_of(a, bits, &z.sigma)?;
+    let z = svd_jacobi(&w)?;
+    let dimension = w.nrows().max(w.ncols());
+    let rank = numerical_rank_of(a, bits, &w, &z.sigma)?;
     let p = pseudoinverse_of(&z, rank)?;
     let v = yw.mul(&p).map_err(gr)?;
     let residual = v.mul(&w).map_err(gr)?.sub(&yw).map_err(gr)?;
-    let e = epsilon(a, bits, &z.sigma)?;
+    let e = epsilon(a, bits, dimension, &z.sigma)?;
     let consistent = (0..residual.nrows()).all(|i| (0..residual.ncols()).all(|j| abs_real(&residual.entry(i, j)).cmp_magma(&e) != Ordering::Greater));
     Ok((x, y, v, kernel_of(&z, rank), consistent))
 }

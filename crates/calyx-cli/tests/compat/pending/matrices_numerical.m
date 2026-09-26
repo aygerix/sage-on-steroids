@@ -40,6 +40,10 @@ ok, Small(Matrix(v*A-w)), Small(k*A);
 NumericalIsConsistent(Matrix(RR,2,2,[1,0,0,0]), Vector(RR,[0,1]));
 A0 := Matrix(RR, 3, 2, [1,0,2,0,3,0]);
 NumericalRank(A0), NumericalRank(A0:Epsilon:=0.1), Small(NumericalKernel(A0)*A0);
+R2 := RealField(30);
+A2 := Matrix(R2, 40, 20, [ ((37*i + 19*j + i*j) mod 101) - 50 : i in [1..40], j in [1..20]]);
+B2 := Matrix(R2, 20, 40, [ ((23*i + 41*j + 3*i*j) mod 103) - 51 : i in [1..20], j in [1..40]]);
+NumericalRank(A2 * B2);
 B := Matrix(RR, 3, 3, [1,2,3,4,5,7,8,10,11]);
 Small(B*NumericalInverse(B)-1);
 
