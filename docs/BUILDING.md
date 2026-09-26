@@ -76,9 +76,14 @@ calyx from starting.
 ## Release archives
 
 The release workflow runs only for a version tag or when started by hand. It
-prepares one archive for Apple ARM64, Linux ARM64, and the general and AVX2
-Linux x86-64 targets. It uploads those archives as workflow artifacts;
-it does not create a release or publish a container image.
+prepares one archive each for Apple ARM64, Linux ARM64 and Linux x86-64. The
+x86-64 archive includes both the general and AVX2 FLINT builds. On an AVX2
+machine, the GNU C dynamic loader selects the optimized library from
+`lib/glibc-hwcaps/x86-64-v3`; older machines use the general library in
+`lib`. `calyx --version --verbose` reports the CFLAGS of the library selected
+at run time. The measured AVX-512 build was not faster overall, so it is not
+packaged. The workflow uploads the archives as workflow artifacts; it does
+not create a release or publish a container image.
 
 An archive contains `bin/calyx`, the project `LICENSE`, bundled non-system
 libraries under `lib`, and packaged data under `share/calyx`. Linux archives
@@ -89,7 +94,7 @@ bundled so the archive does not require build dependencies on the target
 system.
 
 Before publishing a release, download its workflow artifacts and attach the
-four archives by hand. Build the full Cunningham table separately and attach
+three archives by hand. Build the full Cunningham table separately and attach
 `cunningham.bin` as an optional release asset; CI deliberately does not build
 or upload the 124 MB file. Users can place it in an extracted archive's
 `share/calyx` directory or select its containing directory with `CALYX_DATA`.
